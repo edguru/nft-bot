@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NFT Minting Bot Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        .status-dot {
+            height: 12px;
+            width: 12px;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 8px;
+        }
+        .running { background-color: #10b981; }
+        .stopped { background-color: #ef4444; }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-100">
+    <div class="container mx-auto px-4 py-8 max-w-7xl">
+        <!-- Header -->
+        <div class="mb-8">
+            <h1 class="text-4xl font-bold mb-2">🎨 NFT Minting Bot</h1>
+            <p class="text-gray-400">Avalanche Network - Early Puppeteer NFTs</p>
+        </div>
+
+        <!-- Bot Status Card -->
+        <div class="bg-gray-800 rounded-lg p-6 mb-6 shadow-lg">
+            <div class="flex items-center justify-between">
+                <div class="flex items-center">
+                    <span id="statusDot" class="status-dot stopped"></span>
+                    <span class="text-2xl font-semibold">Bot Status: <span id="botStatus">Checking...</span></span>
+                </div>
+                <div class="space-x-4">
+                    <button onclick="startBot()" id="startBtn" class="bg-green-600 hover:bg-green-700 px-6 py-2 rounded-lg font-semibold transition">
+                        ▶ Start Bot
+                    </button>
+                    <button onclick="stopBot()" id="stopBtn" class="bg-red-600 hover:bg-red-700 px-6 py-2 rounded-lg font-semibold transition">
+                        ⏸ Stop Bot
+                    </button>
+                    <button onclick="refreshDashboard()" class="bg-blue-600 hover:bg-blue-700 px-6 py-2 rounded-lg font-semibold transition">
+                        🔄 Refresh
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Statistics Grid -->
+        <div class="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-6">
+            <div class="bg-gray-800 rounded-lg p-6 shadow-lg">
+                <div class="text-gray-400 text-sm mb-1">Total Minted</div>
+                <div class="text-3xl font-bold text-blue-400" id="totalMinted">0</div>
+            </div>
+            <div class="bg-gray-800 rounded-lg p-6 shadow-lg">
+                <div class="text-gray-400 text-sm mb-1">Mainnet</div>
+                <div class="text-3xl font-bold text-purple-400" id="mainnetCount">0</div>
+            </div>
+            <div class="bg-gray-800 rounded-lg p-6 shadow-lg">
+                <div class="text-gray-400 text-sm mb-1">Testnet</div>
+                <div class="text-3xl font-bold text-yellow-400" id="testnetCount">0</div>
+            </div>
+            <div class="bg-gray-800 rounded-lg p-6 shadow-lg">
+                <div class="text-gray-400 text-sm mb-1">Success</div>
+                <div class="text-3xl font-bold text-green-400" id="successCount">0</div>
+            </div>
+            <div class="bg-gray-800 rounded-lg p-6 shadow-lg">
+                <div class="text-gray-400 text-sm mb-1">Failed</div>
+                <div class="text-3xl font-bold text-red-400" id="failedCount">0</div>
+            </div>
+            <div class="bg-gray-800 rounded-lg p-6 shadow-lg">
+                <div class="text-gray-400 text-sm mb-1">Today</div>
+                <div class="text-3xl font-bold text-cyan-400" id="todayCount">0</div>
+            </div>
+        </div>
+
+        <!-- Wallet Balances -->
+        <div class="bg-gray-800 rounded-lg p-6 mb-6 shadow-lg">
+            <h2 class="text-2xl font-bold mb-4">💰 Wallet Balances</h2>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div>
+                    <div class="text-gray-400 text-sm mb-1">Owner Address</div>
+                    <div class="font-mono text-sm bg-gray-700 p-2 rounded" id="ownerAddress">Loading...</div>
+                </div>
+                <div>
+                    <div class="text-gray-400 text-sm mb-1">Testnet Balance</div>
+                    <div class="text-xl font-bold" id="testnetBalance">- AVAX</div>
+                </div>
+                <div>
+                    <div class="text-gray-400 text-sm mb-1">Mainnet Balance</div>
+                    <div class="text-xl font-bold" id="mainnetBalance">- AVAX</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Export Section -->
+        <div class="bg-gray-800 rounded-lg p-6 mb-6 shadow-lg">
+            <h2 class="text-2xl font-bold mb-4">📤 Export Data</h2>
+            <div class="flex space-x-4">
+                <button onclick="downloadCSV()" class="bg-blue-600 hover:bg-blue-700 px-6 py-2 rounded-lg font-semibold transition">
+                    💾 Download CSV
+                </button>
+                <button onclick="emailCSV()" class="bg-purple-600 hover:bg-purple-700 px-6 py-2 rounded-lg font-semibold transition">
+                    📧 Email CSV
+                </button>
+            </div>
+        </div>
+
+        <!-- Recent Transactions -->
+        <div class="bg-gray-800 rounded-lg p-6 mb-6 shadow-lg">
+            <h2 class="text-2xl font-bold mb-4">📜 Recent Transactions</h2>
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                    <thead>
+                        <tr class="border-b border-gray-700">
+                            <th class="text-left p-2">Time</th>
+                            <th class="text-left p-2">Network</th>
+                            <th class="text-left p-2">Recipient</th>
+                            <th class="text-left p-2">Status</th>
+                            <th class="text-left p-2">Explorer</th>
+                        </tr>
+                    </thead>
+                    <tbody id="transactionsTable">
+                        <tr>
+                            <td colspan="5" class="text-center p-4 text-gray-400">Loading...</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Bot Logs -->
+        <div class="bg-gray-800 rounded-lg p-6 shadow-lg">
+            <h2 class="text-2xl font-bold mb-4">📋 Bot Logs (Last 50 lines)</h2>
+            <div class="bg-gray-900 rounded p-4 font-mono text-xs overflow-auto max-h-96">
+                <div id="logsContainer">Loading logs...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_URL = 'http://localhost:5000/api';
+
+        async function checkBotStatus() {
+            try {
+                const response = await fetch(`${API_URL}/bot/status`);
+                const data = await response.json();
+                
+                const statusDot = document.getElementById('statusDot');
+                const botStatus = document.getElementById('botStatus');
+                
+                if (data.running) {
+                    statusDot.className = 'status-dot running';
+                    botStatus.textContent = `Running (PID: ${data.pid})`;
+                } else {
+                    statusDot.className = 'status-dot stopped';
+                    botStatus.textContent = 'Stopped';
+                }
+            } catch (error) {
+                console.error('Error checking status:', error);
+            }
+        }
+
+        async function startBot() {
+            if (!confirm('Start the minting bot?')) return;
+            
+            try {
+                const response = await fetch(`${API_URL}/bot/start`, { method: 'POST' });
+                const data = await response.json();
+                
+                if (data.success) {
+                    alert('Bot started successfully!');
+                    refreshDashboard();
+                } else {
+                    alert('Error: ' + (data.error || 'Unknown error'));
+                }
+            } catch (error) {
+                alert('Failed to start bot: ' + error.message);
+            }
+        }
+
+        async function stopBot() {
+            if (!confirm('Stop the minting bot?')) return;
+            
+            try {
+                const response = await fetch(`${API_URL}/bot/stop`, { method: 'POST' });
+                const data = await response.json();
+                
+                if (data.success) {
+                    alert('Bot stopped successfully!');
+                    refreshDashboard();
+                } else {
+                    alert('Error: ' + (data.error || 'Unknown error'));
+                }
+            } catch (error) {
+                alert('Failed to stop bot: ' + error.message);
+            }
+        }
+
+        async function loadStats() {
+            try {
+                const response = await fetch(`${API_URL}/stats`);
+                const data = await response.json();
+                
+                document.getElementById('totalMinted').textContent = data.total_minted;
+                document.getElementById('mainnetCount').textContent = data.mainnet_count;
+                document.getElementById('testnetCount').textContent = data.testnet_count;
+                document.getElementById('successCount').textContent = data.success_count;
+                document.getElementById('failedCount').textContent = data.failed_count;
+                document.getElementById('todayCount').textContent = data.today_count;
+            } catch (error) {
+                console.error('Error loading stats:', error);
+            }
+        }
+
+        async function loadBalances() {
+            try {
+                const response = await fetch(`${API_URL}/aws/balance`);
+                const data = await response.json();
+                
+                if (!data.error) {
+                    document.getElementById('ownerAddress').textContent = data.owner_address;
+                    document.getElementById('testnetBalance').textContent = parseFloat(data.testnet_balance).toFixed(4) + ' AVAX';
+                    document.getElementById('mainnetBalance').textContent = parseFloat(data.mainnet_balance).toFixed(4) + ' AVAX';
+                }
+            } catch (error) {
+                console.error('Error loading balances:', error);
+            }
+        }
+
+        async function loadTransactions() {
+            try {
+                const response = await fetch(`${API_URL}/transactions?limit=20`);
+                const data = await response.json();
+                
+                const tbody = document.getElementById('transactionsTable');
+                tbody.innerHTML = '';
+                
+                if (data.transactions.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="5" class="text-center p-4 text-gray-400">No transactions yet</td></tr>';
+                    return;
+                }
+                
+                data.transactions.forEach(tx => {
+                    const row = document.createElement('tr');
+                    row.className = 'border-b border-gray-700 hover:bg-gray-750';
+                    
+                    const time = new Date(tx.Timestamp).toLocaleString();
+                    const statusColor = tx.Status === 'SUCCESS' ? 'text-green-400' : 'text-red-400';
+                    
+                    row.innerHTML = `
+                        <td class="p-2">${time}</td>
+                        <td class="p-2"><span class="px-2 py-1 rounded ${tx.Network === 'mainnet' ? 'bg-purple-600' : 'bg-yellow-600'}">${tx.Network}</span></td>
+                        <td class="p-2 font-mono text-xs">${tx.Recipient_Address.slice(0, 10)}...${tx.Recipient_Address.slice(-8)}</td>
+                        <td class="p-2 ${statusColor} font-semibold">${tx.Status}</td>
+                        <td class="p-2">
+                            ${tx.Explorer_URL !== 'N/A' ? `<a href="${tx.Explorer_URL}" target="_blank" class="text-blue-400 hover:underline">View ↗</a>` : '-'}
+                        </td>
+                    `;
+                    tbody.appendChild(row);
+                });
+            } catch (error) {
+                console.error('Error loading transactions:', error);
+            }
+        }
+
+        async function loadLogs() {
+            try {
+                const response = await fetch(`${API_URL}/logs?lines=50`);
+                const data = await response.json();
+                
+                const logsContainer = document.getElementById('logsContainer');
+                
+                if (data.logs.length === 0) {
+                    logsContainer.textContent = 'No logs available';
+                    return;
+                }
+                
+                logsContainer.innerHTML = data.logs.map(log => 
+                    `<div class="mb-1">${escapeHtml(log)}</div>`
+                ).join('');
+                
+                logsContainer.scrollTop = logsContainer.scrollHeight;
+            } catch (error) {
+                console.error('Error loading logs:', error);
+            }
+        }
+
+        async function downloadCSV() {
+            try {
+                window.open(`${API_URL}/export/csv`, '_blank');
+            } catch (error) {
+                alert('Failed to download CSV: ' + error.message);
+            }
+        }
+
+        async function emailCSV() {
+            const email = prompt('Enter email address (or leave blank for default):');
+            
+            try {
+                const response = await fetch(`${API_URL}/export/email`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email: email || undefined })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    alert('CSV emailed successfully!');
+                } else {
+                    alert('Error: ' + (data.error || 'Unknown error'));
+                }
+            } catch (error) {
+                alert('Failed to email CSV: ' + error.message);
+            }
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function refreshDashboard() {
+            checkBotStatus();
+            loadStats();
+            loadBalances();
+            loadTransactions();
+            loadLogs();
+        }
+
+        // Initial load
+        refreshDashboard();
+
+        // Auto-refresh every 10 seconds
+        setInterval(refreshDashboard, 10000);
+    </script>
+</body>
+</html>

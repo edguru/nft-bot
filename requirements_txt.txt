@@ -1,0 +1,6 @@
+web3==6.11.3
+boto3==1.34.19
+eth-account==0.10.0
+flask==3.0.0
+flask-cors==4.0.0
+python-dotenv==1.0.0
