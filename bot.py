@@ -109,7 +109,7 @@ SLEEP_PATTERNS = [
     23, 24, 25, 26, 27, 28, 29, 30, 28, 25
 ]
 
-CYCLE_OPTIONS = [3, 5, 7]
+CYCLE_OPTIONS = [1, 2, 3]
 
 # ============================================
 # TRUE RANDOMNESS
