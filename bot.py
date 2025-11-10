@@ -366,7 +366,7 @@ def mint_nft(network, recipient_address, owner_account, owner_address, w3_testne
         logger.info("[%s] ✅ Transaction sent: %s", network_name, tx_hash_hex)
         logger.info("[%s] Waiting for confirmation (timeout: 300s)...", network_name)
         
-        receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=300)
+        receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=600)
         
         if receipt['status'] == 1:
             logger.info("[%s] ✅ Transaction confirmed - Gas used: %d", network_name, receipt['gasUsed'])
