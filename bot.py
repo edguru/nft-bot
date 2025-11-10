@@ -104,7 +104,7 @@ CONTRACT_ABI = [
 
 # Sleep patterns (1-30 in seconds)
 SLEEP_PATTERNS = [
-    15, 6, 3, 4, 5, 7, 9, 11
+    15, 6, 3, 4, 5, 7, 9, 2
 ]
 
 CYCLE_OPTIONS = [ 1, 2]
@@ -364,9 +364,9 @@ def mint_nft(network, recipient_address, owner_account, owner_address, w3_testne
         tx_hash_hex = tx_hash.hex()
         
         logger.info("[%s] ✅ Transaction sent: %s", network_name, tx_hash_hex)
-        logger.info("[%s] Waiting for confirmation (timeout: 300s)...", network_name)
+        logger.info("[%s] Waiting for confirmation (timeout: 120s)...", network_name)
         
-        receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=600)
+        receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
         
         if receipt['status'] == 1:
             logger.info("[%s] ✅ Transaction confirmed - Gas used: %d", network_name, receipt['gasUsed'])
