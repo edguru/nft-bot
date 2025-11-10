@@ -6,6 +6,7 @@ import os
 import json
 import subprocess
 import signal
+import sys
 from datetime import datetime
 import boto3
 from botocore.exceptions import ClientError
@@ -43,9 +44,9 @@ def start_bot():
             except OSError:
                 os.remove(PID_FILE)
         
-        # Start bot process
+        # Start bot process (use same Python interpreter as API)
         process = subprocess.Popen(
-            ['python3', 'bot.py'],
+            [sys.executable, 'bot.py'],
             stdout=open(LOG_FILE, 'a'),
             stderr=subprocess.STDOUT,
             preexec_fn=os.setpgrp

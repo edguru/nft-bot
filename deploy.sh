@@ -54,6 +54,28 @@ validate_files() {
     print_success "All required files found"
 }
 
+# Detect Python version
+detect_python() {
+    print_info "Detecting Python version..."
+    
+    # Try Python 3.12 first, then 3.11, then python3
+    if command -v python3.12 &> /dev/null; then
+        PYTHON_CMD="python3.12"
+        PYTHON_VERSION="3.12"
+    elif command -v python3.11 &> /dev/null; then
+        PYTHON_CMD="python3.11"
+        PYTHON_VERSION="3.11"
+    elif command -v python3 &> /dev/null; then
+        PYTHON_CMD="python3"
+        PYTHON_VERSION=$(python3 --version | cut -d' ' -f2 | cut -d'.' -f1,2)
+    else
+        print_error "Python 3 not found"
+        exit 1
+    fi
+    
+    print_success "Found Python $PYTHON_VERSION at $(which $PYTHON_CMD)"
+}
+
 # Check if running on EC2
 check_environment() {
     print_info "Checking environment..."
@@ -114,11 +136,14 @@ install_dependencies() {
     if [ "$OS" == "amzn" ] || [ "$OS" == "rhel" ]; then
         # Amazon Linux / RHEL
         sudo yum update -y
+        # Install python3-venv if not already available
+        sudo yum install -y python3 python3-pip python3-venv nginx git || \
         sudo yum install -y python3.11 python3.11-pip nginx git
     elif [ "$OS" == "ubuntu" ] || [ "$OS" == "debian" ]; then
         # Ubuntu / Debian
         sudo apt update
-        sudo apt install -y python3.11 python3-pip nginx git
+        # Install python3-venv package
+        sudo apt install -y python3 python3-venv python3-pip nginx git
     else
         print_error "Unsupported OS: $OS"
         exit 1
@@ -149,8 +174,17 @@ install_python_deps() {
     print_info "Installing Python dependencies..."
     
     cd "$PROJECT_DIR"
-    python3.11 -m pip install --upgrade pip
-    python3.11 -m pip install -r requirements.txt
+    
+    # Create virtual environment if it doesn't exist
+    if [ ! -d "$PROJECT_DIR/venv" ]; then
+        print_info "Creating virtual environment with $PYTHON_CMD..."
+        $PYTHON_CMD -m venv "$PROJECT_DIR/venv"
+    fi
+    
+    # Activate virtual environment and install packages
+    source "$PROJECT_DIR/venv/bin/activate"
+    python -m pip install --upgrade pip
+    python -m pip install -r requirements.txt
     
     print_success "Python dependencies installed"
 }
@@ -201,13 +235,13 @@ After=network.target
 Type=simple
 User=$USER
 WorkingDirectory=$PROJECT_DIR
-Environment="PATH=/usr/local/bin:/usr/bin:/bin"
+Environment="PATH=$PROJECT_DIR/venv/bin:/usr/local/bin:/usr/bin:/bin"
 Environment="AWS_DEFAULT_REGION=$AWS_REGION"
 Environment="SNS_TOPIC_ARN=$SNS_TOPIC_ARN"
 Environment="EMAIL_RECIPIENT=$EMAIL_RECIPIENT"
 Environment="S3_BUCKET=$S3_BUCKET"
 Environment="SECRET_NAME=$SECRET_NAME"
-ExecStart=/usr/bin/python3.11 $PROJECT_DIR/api.py
+ExecStart=$PROJECT_DIR/venv/bin/python $PROJECT_DIR/api.py
 Restart=always
 RestartSec=5
 
@@ -286,7 +320,7 @@ test_aws() {
     print_info "Testing AWS connectivity..."
     
     # Test AWS credentials
-    if python3.11 -c "import boto3; boto3.client('sts').get_caller_identity()" 2>/dev/null; then
+    if $PROJECT_DIR/venv/bin/python -c "import boto3; boto3.client('sts').get_caller_identity()" 2>/dev/null; then
         print_success "AWS credentials valid"
     else
         print_error "AWS credentials not configured"
@@ -295,7 +329,7 @@ test_aws() {
     fi
     
     # Test Secrets Manager
-    if python3.11 -c "import boto3,json; boto3.client('secretsmanager').get_secret_value(SecretId='$SECRET_NAME')" 2>/dev/null; then
+    if $PROJECT_DIR/venv/bin/python -c "import boto3,json; boto3.client('secretsmanager').get_secret_value(SecretId='$SECRET_NAME')" 2>/dev/null; then
         print_success "Secrets Manager accessible"
     else
         print_error "Cannot access secret: $SECRET_NAME"
@@ -351,6 +385,7 @@ show_completion() {
 # Main deployment flow
 main() {
     validate_files
+    detect_python
     check_environment
     collect_inputs
     install_dependencies
