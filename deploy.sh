@@ -118,7 +118,7 @@ install_dependencies() {
     elif [ "$OS" == "ubuntu" ] || [ "$OS" == "debian" ]; then
         # Ubuntu / Debian
         sudo apt update
-        sudo apt install -y python3.11 python3-pip nginx git
+        sudo apt install -y python3.12.3 python3-pip nginx git
     else
         print_error "Unsupported OS: $OS"
         exit 1
