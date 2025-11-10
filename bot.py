@@ -1,4 +1,4 @@
-# bot.py - Main NFT Minting Bot
+# bot.py - Main NFT Minting Bot (OPTIMIZED FOR SPEED)
 import os
 import csv
 import time
@@ -12,6 +12,8 @@ from eth_account import Account
 import boto3
 from decimal import Decimal
 from botocore.exceptions import ClientError
+import threading
+from queue import Queue
 
 # ============================================
 # LOGGING SETUP
@@ -51,6 +53,9 @@ def setup_logging():
 # Initialize logger
 logger = setup_logging()
 
+# Thread-safe CSV lock
+csv_lock = threading.Lock()
+
 # ============================================
 # AWS CLIENTS
 # ============================================
@@ -79,9 +84,9 @@ MAINNET_RPC = 'https://api.avax.network/ext/bc/C/rpc'
 # Gas thresholds
 MIN_GAS_THRESHOLD = Decimal('0.01')
 
-# Daily limits
-MIN_MAINNET_TXNS_PER_DAY = 4000
-MAX_MAINNET_TXNS_PER_DAY = 6300
+# Daily limits - OPTIMIZED FOR SPEED
+MIN_MAINNET_TXNS_PER_DAY = 4500  # Increased from 4000
+MAX_MAINNET_TXNS_PER_DAY = 7200  # Increased from 6300
 
 # CSV file
 CSV_FILE = 'nft_minting_records.csv'
@@ -102,12 +107,19 @@ CONTRACT_ABI = [
     }
 ]
 
-# Sleep patterns (1-30 in seconds)
+# OPTIMIZED: Sleep patterns reduced to 1-5 seconds (from 3-15)
+# This allows ~720-3600 tx/hour instead of 240-1200 tx/hour
 SLEEP_PATTERNS = [
-    15, 6, 3, 4, 5, 7, 9, 2
+    1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 5
 ]
 
-CYCLE_OPTIONS = [ 1, 2]
+# OPTIMIZED: Testnet/Mainnet ratio changed to 3-7 testnet per 1 mainnet
+# This focuses more mints on mainnet (target network)
+CYCLE_OPTIONS = [3, 5, 7]
+
+# OPTIMIZED: Parallel processing - number of concurrent workers
+# Each worker can process transactions simultaneously
+MAX_WORKERS = 3  # Process 3 transactions at once
 
 # ============================================
 # TRUE RANDOMNESS
@@ -157,8 +169,9 @@ def send_email_with_csv():
     try:
         logger.info("Preparing to email CSV file to %s", EMAIL_RECIPIENT)
         # Read CSV file
-        with open(CSV_FILE, 'r') as f:
-            csv_content = f.read()
+        with csv_lock:
+            with open(CSV_FILE, 'r') as f:
+                csv_content = f.read()
         
         # Create MIME message
         from email.mime.multipart import MIMEMultipart
@@ -210,23 +223,25 @@ def backup_to_s3():
         s3_key = f"backups/nft_records_{timestamp}.csv"
         
         logger.info("Backing up CSV to S3: %s/%s", S3_BUCKET, s3_key)
-        s3_client.upload_file(CSV_FILE, S3_BUCKET, s3_key)
+        with csv_lock:
+            s3_client.upload_file(CSV_FILE, S3_BUCKET, s3_key)
         logger.info("✅ Backed up to S3 successfully")
     except Exception as e:
         logger.error("❌ S3 backup failed: %s", e)
 
 # ============================================
-# CSV MANAGEMENT
+# CSV MANAGEMENT (THREAD-SAFE)
 # ============================================
 def init_csv():
     if not os.path.exists(CSV_FILE):
         logger.info("Initializing new CSV file: %s", CSV_FILE)
-        with open(CSV_FILE, 'w', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                'Timestamp', 'Network', 'Recipient_Address', 'Private_Key',
-                'Transaction_Hash', 'Status', 'Explorer_URL', 'Gas_Used', 'Owner_Address'
-            ])
+        with csv_lock:
+            with open(CSV_FILE, 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow([
+                    'Timestamp', 'Network', 'Recipient_Address', 'Private_Key',
+                    'Transaction_Hash', 'Status', 'Explorer_URL', 'Gas_Used', 'Owner_Address'
+                ])
         logger.info("✅ CSV file initialized")
     else:
         logger.info("CSV file already exists: %s", CSV_FILE)
@@ -237,12 +252,13 @@ def save_to_csv(network, recipient_addr, private_key, tx_hash, status, gas_used,
     explorer_url = f"https://{'testnet.' if network == 'testnet' else ''}snowtrace.io/tx/{tx_hash}" if tx_hash else 'N/A'
     
     logger.info("Saving transaction to CSV - Status: %s, Network: %s", status, network)
-    with open(CSV_FILE, 'a', newline='') as f:
-        writer = csv.writer(f)
-        writer.writerow([
-            timestamp, network, recipient_addr, private_key,
-            tx_hash if tx_hash else 'N/A', status, explorer_url, gas_used, owner_addr
-        ])
+    with csv_lock:  # Thread-safe CSV writing
+        with open(CSV_FILE, 'a', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                timestamp, network, recipient_addr, private_key,
+                tx_hash if tx_hash else 'N/A', status, explorer_url, gas_used, owner_addr
+            ])
     logger.info("✅ Transaction saved to CSV")
 
 # ============================================
@@ -295,7 +311,7 @@ def check_gas_balance(w3, address):
     return balance_avax
 
 # ============================================
-# MINTING FUNCTIONS
+# MINTING FUNCTIONS (OPTIMIZED)
 # ============================================
 def mint_nft(network, recipient_address, owner_account, owner_address, w3_testnet, w3_mainnet, 
              testnet_contract, mainnet_contract, owner_private_key):
@@ -359,13 +375,14 @@ def mint_nft(network, recipient_address, owner_account, owner_address, w3_testne
         signed_txn = w3.eth.account.sign_transaction(txn, owner_private_key)
         
         logger.info("[%s] Sending transaction...", network_name)
-        # FIXED: Use rawTransaction instead of raw_transaction
         tx_hash = w3.eth.send_raw_transaction(signed_txn.rawTransaction)
         tx_hash_hex = tx_hash.hex()
         
         logger.info("[%s] ✅ Transaction sent: %s", network_name, tx_hash_hex)
-        logger.info("[%s] Waiting for confirmation (timeout: 120s)...", network_name)
         
+        # OPTIMIZED: Reduced timeout from 600s to 120s
+        # Avalanche finalizes in ~2 seconds, 120s is very safe
+        logger.info("[%s] Waiting for confirmation (timeout: 120s)...", network_name)
         receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
         
         if receipt['status'] == 1:
@@ -390,14 +407,70 @@ def mint_nft(network, recipient_address, owner_account, owner_address, w3_testne
         return None, f'FAILED', 0
 
 # ============================================
-# MAIN BOT LOGIC
+# WORKER THREAD FUNCTION (NEW - FOR PARALLEL PROCESSING)
+# ============================================
+def worker_thread(worker_id, task_queue, stats_dict, owner_private_key, w3_testnet, w3_mainnet, 
+                  owner_account, owner_address, testnet_contract, mainnet_contract, stop_event):
+    """Worker thread that processes minting tasks from queue"""
+    logger.info("Worker %d started", worker_id)
+    
+    while not stop_event.is_set():
+        try:
+            # Get task from queue (timeout to check stop_event periodically)
+            try:
+                task = task_queue.get(timeout=1)
+            except:
+                continue
+            
+            if task is None:  # Poison pill to stop worker
+                logger.info("Worker %d received stop signal", worker_id)
+                break
+            
+            network, wallet = task
+            
+            # Execute mint
+            tx_hash, status, gas_used = mint_nft(
+                network, wallet['address'], owner_account, owner_address,
+                w3_testnet, w3_mainnet, testnet_contract, mainnet_contract,
+                owner_private_key
+            )
+            
+            # Save to CSV (thread-safe)
+            save_to_csv(network, wallet['address'], wallet['private_key'], 
+                       tx_hash, status, gas_used, owner_address)
+            
+            # Update stats (thread-safe with lock)
+            if status == 'SUCCESS':
+                with stats_dict['lock']:
+                    stats_dict['total_minted'] += 1
+                    if network == 'mainnet':
+                        stats_dict['mainnet_today'] += 1
+                    logger.info("📊 Worker %d - Total: %d | Today's mainnet: %d/%d", 
+                               worker_id, stats_dict['total_minted'], 
+                               stats_dict['mainnet_today'], stats_dict['target'])
+            
+            # Handle failures
+            if status.startswith('FAILED') and ('LOW_GAS' in status or 'NO_GAS' in status):
+                logger.error("Worker %d - Low gas detected, signaling stop", worker_id)
+                stop_event.set()
+            
+            task_queue.task_done()
+            
+        except Exception as e:
+            logger.error("Worker %d error: %s", worker_id, str(e), exc_info=True)
+    
+    logger.info("Worker %d stopped", worker_id)
+
+# ============================================
+# MAIN BOT LOGIC (OPTIMIZED WITH PARALLEL PROCESSING)
 # ============================================
 def run_bot():
     logger.info("=" * 60)
-    logger.info("NFT MINTING BOT STARTING...")
+    logger.info("NFT MINTING BOT STARTING (OPTIMIZED MODE)...")
     logger.info("=" * 60)
     logger.info("Bot process PID: %d", os.getpid())
     logger.info("Log file: %s", os.path.abspath('bot.log'))
+    logger.info("Parallel workers: %d", MAX_WORKERS)
     
     # Get owner private key from AWS Secrets Manager
     logger.info("🔐 Retrieving owner private key from AWS Secrets Manager...")
@@ -425,52 +498,77 @@ def run_bot():
 Owner: {owner_address}
 Testnet Balance: {testnet_balance} AVAX
 Mainnet Balance: {mainnet_balance} AVAX
+Workers: {MAX_WORKERS}
 Start Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 """
     )
     
     init_csv()
     
-    testnet_counter = 0
-    mainnet_counter_today = 0
-    total_minted = 0
-    current_date = datetime.now().date()
+    # Shared statistics dictionary (thread-safe)
+    stats_dict = {
+        'total_minted': 0,
+        'mainnet_today': 0,
+        'target': true_random_int(MIN_MAINNET_TXNS_PER_DAY, MAX_MAINNET_TXNS_PER_DAY),
+        'lock': threading.Lock()
+    }
     
+    testnet_counter = 0
+    current_date = datetime.now().date()
     current_cycle = true_random_choice(CYCLE_OPTIONS)
-    daily_mainnet_target = true_random_int(MIN_MAINNET_TXNS_PER_DAY, MAX_MAINNET_TXNS_PER_DAY)
     
     logger.info("🎯 Current cycle: Every %d testnet = 1 mainnet", current_cycle)
-    logger.info("🎯 Daily mainnet target: %d", daily_mainnet_target)
+    logger.info("🎯 Daily mainnet target: %d", stats_dict['target'])
     logger.info("=" * 60)
     
+    # Create task queue and stop event
+    task_queue = Queue(maxsize=MAX_WORKERS * 2)  # Buffer for smooth operation
+    stop_event = threading.Event()
+    
+    # Start worker threads
+    workers = []
+    for i in range(MAX_WORKERS):
+        worker = threading.Thread(
+            target=worker_thread,
+            args=(i, task_queue, stats_dict, owner_private_key, w3_testnet, w3_mainnet,
+                  owner_account, owner_address, testnet_contract, mainnet_contract, stop_event),
+            daemon=True
+        )
+        worker.start()
+        workers.append(worker)
+        logger.info("Started worker thread %d", i)
+    
     try:
-        while True:
+        while not stop_event.is_set():
             # New day check
             if datetime.now().date() != current_date:
                 logger.info("🌅 NEW DAY - Date changed to %s", datetime.now().date())
+                
+                # Wait for all pending tasks to complete
+                task_queue.join()
+                
                 # Backup and email previous day's data
                 backup_to_s3()
                 send_email_with_csv()
                 
                 current_date = datetime.now().date()
-                mainnet_counter_today = 0
-                daily_mainnet_target = true_random_int(MIN_MAINNET_TXNS_PER_DAY, MAX_MAINNET_TXNS_PER_DAY)
-                logger.info("New daily mainnet target: %d", daily_mainnet_target)
+                with stats_dict['lock']:
+                    stats_dict['mainnet_today'] = 0
+                    stats_dict['target'] = true_random_int(MIN_MAINNET_TXNS_PER_DAY, MAX_MAINNET_TXNS_PER_DAY)
+                logger.info("New daily mainnet target: %d", stats_dict['target'])
                 
-                send_alert("📊 Daily Report", f"New day started. Target: {daily_mainnet_target} mainnet mints")
+                send_alert("📊 Daily Report", f"New day started. Target: {stats_dict['target']} mainnet mints")
             
             # Daily limit check
-            if mainnet_counter_today >= daily_mainnet_target:
-                logger.info("✅ Daily limit reached (%d/%d) - Sleeping for 1 hour", mainnet_counter_today, daily_mainnet_target)
-                time.sleep(3600)
-                continue
+            with stats_dict['lock']:
+                if stats_dict['mainnet_today'] >= stats_dict['target']:
+                    logger.info("✅ Daily limit reached (%d/%d) - Sleeping for 1 hour", 
+                               stats_dict['mainnet_today'], stats_dict['target'])
+                    time.sleep(3600)
+                    continue
             
             # Generate new recipient wallet
-            logger.info("")
-            logger.info("=" * 60)
-            logger.info("[%s] Starting new mint cycle", datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
             wallet = generate_new_wallet()
-            logger.info("📍 Recipient: %s", wallet['address'])
             
             # Determine network
             testnet_counter += 1
@@ -479,62 +577,57 @@ Start Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                 network = 'mainnet'
                 testnet_counter = 0
                 current_cycle = true_random_choice(CYCLE_OPTIONS)
-                logger.info("🔄 Cycle completed - Switching to mainnet")
-                logger.info("Next cycle: Every %d testnet = 1 mainnet", current_cycle)
+                logger.info("🔄 Cycle completed - Next: Every %d testnet = 1 mainnet", current_cycle)
             else:
                 network = 'testnet'
             
-            logger.info("🌐 Target Network: %s", network.upper())
-            logger.info("👤 Owner (gas payer): %s", owner_address)
+            logger.info("🌐 Queuing task for %s", network.upper())
             
-            # Random sleep
+            # Add task to queue (this will block if queue is full)
+            task_queue.put((network, wallet))
+            
+            # OPTIMIZED: Shorter sleep between task submissions
             sleep_duration = true_random_choice(SLEEP_PATTERNS)
-            logger.info("💤 Sleeping for %dm %ds to simulate human behavior...", sleep_duration // 60, sleep_duration % 60)
+            logger.info("💤 Sleeping %ds before next task...", sleep_duration)
             time.sleep(sleep_duration)
             
-            # Mint NFT (Owner pays gas, recipient receives NFT)
-            logger.info("🎨 Initiating mint on %s", network.upper())
-            logger.info("   Owner mints → Recipient receives")
-            
-            tx_hash, status, gas_used = mint_nft(
-                network, wallet['address'], owner_account, owner_address,
-                w3_testnet, w3_mainnet, testnet_contract, mainnet_contract,
-                owner_private_key
-            )
-            
-            # Save to CSV
-            save_to_csv(network, wallet['address'], wallet['private_key'], 
-                       tx_hash, status, gas_used, owner_address)
-            
-            # Update counters
-            if status == 'SUCCESS':
-                total_minted += 1
-                if network == 'mainnet':
-                    mainnet_counter_today += 1
-                logger.info("📊 Progress - Total: %d | Today's mainnet: %d/%d", total_minted, mainnet_counter_today, daily_mainnet_target)
-            
-            # Handle failures
-            if status.startswith('FAILED'):
-                if 'LOW_GAS' in status or 'NO_GAS' in status:
-                    logger.error("🛑 STOPPING BOT - Insufficient gas")
-                    break
-            
             # Periodic backup (every 100 mints)
-            if total_minted % 100 == 0 and total_minted > 0:
-                logger.info("📦 Periodic backup triggered (every 100 mints)")
-                backup_to_s3()
+            with stats_dict['lock']:
+                if stats_dict['total_minted'] % 100 == 0 and stats_dict['total_minted'] > 0:
+                    logger.info("📦 Periodic backup triggered")
+                    backup_to_s3()
                 
     except KeyboardInterrupt:
         logger.info("")
         logger.info("👋 Bot stopped by user (KeyboardInterrupt)")
+        stop_event.set()
     except Exception as e:
         logger.error("❌ Critical error occurred: %s", str(e), exc_info=True)
         send_alert("🚨 Bot Crashed", f"Critical error: {str(e)}")
+        stop_event.set()
     finally:
         logger.info("")
         logger.info("=" * 60)
         logger.info("BOT SHUTDOWN SEQUENCE")
         logger.info("=" * 60)
+        
+        # Stop workers
+        logger.info("Stopping worker threads...")
+        stop_event.set()
+        
+        # Wait for queue to empty
+        logger.info("Waiting for pending tasks...")
+        task_queue.join()
+        
+        # Send poison pills to workers
+        for _ in range(MAX_WORKERS):
+            task_queue.put(None)
+        
+        # Wait for workers to finish
+        for worker in workers:
+            worker.join(timeout=5)
+        
+        logger.info("All workers stopped")
         
         # Final backup and email
         logger.info("Performing final backup...")
@@ -542,21 +635,23 @@ Start Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         send_email_with_csv()
         
         # Send shutdown alert
-        send_alert(
-            "🛑 Bot Stopped",
-            f"""NFT Minting Bot has stopped.
+        with stats_dict['lock']:
+            send_alert(
+                "🛑 Bot Stopped",
+                f"""NFT Minting Bot has stopped.
 
-Total Minted: {total_minted}
-Today's Mainnet: {mainnet_counter_today}
+Total Minted: {stats_dict['total_minted']}
+Today's Mainnet: {stats_dict['mainnet_today']}
 Stop Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
 CSV file has been emailed and backed up to S3.
 """
-        )
+            )
         
         logger.info("=" * 60)
         logger.info("BOT STOPPED")
-        logger.info("Total minted: %d", total_minted)
+        with stats_dict['lock']:
+            logger.info("Total minted: %d", stats_dict['total_minted'])
         logger.info("Session duration: %s", datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
         logger.info("=" * 60)
 
