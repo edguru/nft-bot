@@ -104,10 +104,10 @@ CONTRACT_ABI = [
 
 # Sleep patterns (1-30 in seconds)
 SLEEP_PATTERNS = [
-    15, 2, 3, 4, 5, 7, 9, 11, 28
+    15, 2, 3, 4, 5, 7, 9, 11
 ]
 
-CYCLE_OPTIONS = [ 1, 2]
+CYCLE_OPTIONS = [ 1, 1]
 
 # ============================================
 # TRUE RANDOMNESS
