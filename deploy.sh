@@ -336,13 +336,48 @@ test_aws() {
         return 1
     fi
     
-    # Test S3
-    if aws s3 ls s3://$S3_BUCKET 2>/dev/null; then
+    # Test S3 using boto3
+    print_info "Testing S3 bucket access..."
+    S3_TEST=$($PROJECT_DIR/venv/bin/python -c "
+import boto3
+from botocore.exceptions import ClientError
+import sys
+try:
+    s3 = boto3.client('s3', region_name='$AWS_REGION')
+    # Try to head the bucket (check if it exists and is accessible)
+    s3.head_bucket(Bucket='$S3_BUCKET')
+    print('accessible')
+except ClientError as e:
+    error_code = e.response['Error']['Code']
+    if error_code == '404':
+        # Bucket doesn't exist, try to create it
+        try:
+            if '$AWS_REGION' == 'us-east-1':
+                s3.create_bucket(Bucket='$S3_BUCKET')
+            else:
+                s3.create_bucket(Bucket='$S3_BUCKET', CreateBucketConfiguration={'LocationConstraint': '$AWS_REGION'})
+            print('created')
+        except Exception as create_err:
+            print('error: ' + str(create_err))
+            sys.exit(1)
+    else:
+        print('error: ' + str(e))
+        sys.exit(1)
+except Exception as e:
+    print('error: ' + str(e))
+    sys.exit(1)
+" 2>&1)
+    
+    S3_EXIT_CODE=$?
+    if [ $S3_EXIT_CODE -eq 0 ] && echo "$S3_TEST" | grep -q "accessible"; then
         print_success "S3 bucket accessible"
+    elif [ $S3_EXIT_CODE -eq 0 ] && echo "$S3_TEST" | grep -q "created"; then
+        print_success "S3 bucket created"
     else
         print_error "Cannot access S3 bucket: $S3_BUCKET"
-        print_info "Creating bucket..."
-        aws s3 mb s3://$S3_BUCKET --region $AWS_REGION || true
+        echo "  Error details: $S3_TEST"
+        print_info "Note: Deployment will continue. Please verify S3 bucket access manually."
+        # Don't fail deployment - bucket might exist in different region or have access issues
     fi
 }
 
