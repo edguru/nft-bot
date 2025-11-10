@@ -256,20 +256,29 @@ EOF
 }
 
 # Configure Nginx
+# Configure Nginx
 configure_nginx() {
     print_info "Configuring Nginx..."
 
     # Get server IP
     SERVER_IP=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4 || echo "localhost")
 
-    sudo tee /etc/nginx/conf.d/nft-bot.conf > /dev/null << EOF
+    # Remove default Nginx config that might conflict
+    print_info "Removing default Nginx configurations..."
+    sudo rm -f /etc/nginx/sites-enabled/default
+    sudo rm -f /etc/nginx/sites-available/default
+
+    # Create our config in sites-available
+    sudo tee /etc/nginx/sites-available/nft-bot > /dev/null << EOF
 server {
-    listen 80;
+    listen 80 default_server;
+    listen [::]:80 default_server;
     server_name $SERVER_IP _;
 
+    root $PROJECT_DIR;
+    index index.html;
+
     location / {
-        root $PROJECT_DIR;
-        index index.html;
         try_files \$uri \$uri/ =404;
     }
 
@@ -286,14 +295,39 @@ server {
 }
 EOF
 
+    # Create symlink to enable the site
+    sudo ln -sf /etc/nginx/sites-available/nft-bot /etc/nginx/sites-enabled/
+
+    # Remove any conflicting conf.d configs
+    sudo rm -f /etc/nginx/conf.d/default.conf
+    sudo rm -f /etc/nginx/conf.d/nft-bot.conf
+
+    # Fix permissions on project directory and files
+    print_info "Fixing file permissions..."
+    sudo chmod 755 $HOME
+    sudo chmod 755 $PROJECT_DIR
+    sudo chmod 644 $PROJECT_DIR/index.html
+    sudo chmod 644 $PROJECT_DIR/*.py 2>/dev/null || true
+
     # Test nginx config
+    print_info "Testing Nginx configuration..."
     sudo nginx -t
 
-    # Start nginx
+    # Restart nginx
     sudo systemctl enable nginx
     sudo systemctl restart nginx
 
-    print_success "Nginx configured"
+    # Verify file exists
+    if [ -f "$PROJECT_DIR/index.html" ]; then
+        print_success "index.html found at $PROJECT_DIR/index.html"
+    else
+        print_error "index.html not found at $PROJECT_DIR/index.html"
+        print_info "Files in project directory:"
+        ls -la $PROJECT_DIR/
+    fi
+
+    print_success "Nginx configured and restarted"
+    print_info "Dashboard should be accessible at http://$SERVER_IP"
 }
 
 # Setup firewall
