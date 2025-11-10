@@ -383,7 +383,7 @@ def mint_nft(network, recipient_address, owner_account, owner_address, w3_testne
         # OPTIMIZED: Reduced timeout from 600s to 120s
         # Avalanche finalizes in ~2 seconds, 120s is very safe
         logger.info("[%s] Waiting for confirmation (timeout: 120s)...", network_name)
-        receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+        receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=300)
         
         if receipt['status'] == 1:
             logger.info("[%s] ✅ Transaction confirmed - Gas used: %d", network_name, receipt['gasUsed'])
