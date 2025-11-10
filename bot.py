@@ -77,7 +77,7 @@ TESTNET_RPC = 'https://api.avax-test.network/ext/bc/C/rpc'
 MAINNET_RPC = 'https://api.avax.network/ext/bc/C/rpc'
 
 # Gas thresholds
-MIN_GAS_THRESHOLD = Decimal('0.5')
+MIN_GAS_THRESHOLD = Decimal('0.01')
 
 # Daily limits
 MIN_MAINNET_TXNS_PER_DAY = 4000
