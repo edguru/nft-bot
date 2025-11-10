@@ -29,6 +29,31 @@ print_info() {
     echo -e "${YELLOW}ℹ $1${NC}"
 }
 
+# Validate required files
+validate_files() {
+    print_info "Validating required files..."
+    
+    REQUIRED_FILES=("bot.py" "api.py" "index.html" "requirements.txt")
+    MISSING_FILES=()
+    
+    for file in "${REQUIRED_FILES[@]}"; do
+        if [ ! -f "$file" ]; then
+            MISSING_FILES+=("$file")
+        fi
+    done
+    
+    if [ ${#MISSING_FILES[@]} -ne 0 ]; then
+        print_error "Missing required files:"
+        for file in "${MISSING_FILES[@]}"; do
+            echo "  - $file"
+        done
+        print_error "Please ensure all files are in the current directory"
+        exit 1
+    fi
+    
+    print_success "All required files found"
+}
+
 # Check if running on EC2
 check_environment() {
     print_info "Checking environment..."
@@ -109,6 +134,12 @@ setup_project() {
     PROJECT_DIR="$HOME/nft-bot"
     mkdir -p "$PROJECT_DIR"
     cd "$PROJECT_DIR"
+    
+    # Copy files to project directory if not already there
+    if [ "$(pwd)" != "$PROJECT_DIR" ] || [ ! -f "$PROJECT_DIR/bot.py" ]; then
+        print_info "Copying files to project directory..."
+        cp -f bot.py api.py index.html requirements.txt "$PROJECT_DIR/" 2>/dev/null || true
+    fi
     
     print_success "Project directory created: $PROJECT_DIR"
 }
@@ -319,6 +350,7 @@ show_completion() {
 
 # Main deployment flow
 main() {
+    validate_files
     check_environment
     collect_inputs
     install_dependencies
@@ -340,3 +372,4 @@ main() {
 
 # Run main function
 main
+

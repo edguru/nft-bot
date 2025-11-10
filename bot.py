@@ -471,3 +471,4 @@ CSV file has been emailed and backed up to S3.
 
 if __name__ == "__main__":
     run_bot()
+
