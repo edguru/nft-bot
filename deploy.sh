@@ -184,7 +184,7 @@ install_python_deps() {
     # Activate virtual environment and install packages
     source "$PROJECT_DIR/venv/bin/activate"
     python -m pip install --upgrade pip
-    python -m pip install -r requirements.txt
+    python -m pip install -r requirements.txt --force-reinstall
 
     print_success "Python dependencies installed"
 }
