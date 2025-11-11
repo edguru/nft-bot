@@ -115,11 +115,11 @@ SLEEP_PATTERNS = [
 
 # OPTIMIZED: Testnet/Mainnet ratio changed to 3-7 testnet per 1 mainnet
 # This focuses more mints on mainnet (target network)
-CYCLE_OPTIONS = [3, 7]
+CYCLE_OPTIONS = [4, 1]
 
 # OPTIMIZED: Parallel processing - number of concurrent workers
 # Each worker can process transactions simultaneously
-MAX_WORKERS = 3  # Process 3 transactions at once
+MAX_WORKERS = 2  # Process 3 transactions at once
 
 # ============================================
 # TRUE RANDOMNESS
