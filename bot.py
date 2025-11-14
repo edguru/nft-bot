@@ -53,6 +53,11 @@ def setup_logging():
 # Initialize logger
 logger = setup_logging()
 
+# GLOBAL NONCE MANAGEMENT
+nonce_lock = threading.Lock()
+current_nonce_mainnet = None
+current_nonce_testnet = None
+
 # Thread-safe CSV lock
 csv_lock = threading.Lock()
 
@@ -274,6 +279,13 @@ def setup_web3(owner_private_key):
     
     owner_account = Account.from_key(owner_private_key)
     owner_address = owner_account.address
+    global current_nonce_mainnet, current_nonce_testnet
+
+    # Load pending nonces (not confirmed ones)
+    current_nonce_mainnet = w3_mainnet.eth.get_transaction_count(owner_address, 'pending')
+    current_nonce_testnet = w3_testnet.eth.get_transaction_count(owner_address, 'pending')
+
+    logger.info(f"[NONCE] Loaded pending nonce - Mainnet: {current_nonce_mainnet}, Testnet: {current_nonce_testnet}")
     
     logger.info("Owner account loaded: %s", owner_address)
     
@@ -341,8 +353,19 @@ def mint_nft(network, recipient_address, owner_account, owner_address, w3_testne
             return None, 'FAILED_LOW_GAS', 0
         
         # Build transaction - Owner mints to recipient
-        nonce = w3.eth.get_transaction_count(owner_address)
-        logger.info("[%s] Current nonce: %d", network_name, nonce)
+        global current_nonce_mainnet, current_nonce_testnet
+
+        # Thread-safe nonce allocation
+        with nonce_lock:
+            if network == 'mainnet':
+                nonce = current_nonce_mainnet
+                current_nonce_mainnet += 1
+            else:
+                nonce = current_nonce_testnet
+                current_nonce_testnet += 1
+
+        logger.info("[%s] Assigned Nonce: %d", network_name, nonce)
+
         
         logger.info("[%s] Estimating gas...", network_name)
         gas_estimate = contract.functions.mint(
@@ -353,7 +376,7 @@ def mint_nft(network, recipient_address, owner_account, owner_address, w3_testne
         ).estimate_gas({'from': owner_address})
         logger.info("[%s] Estimated gas: %d", network_name, gas_estimate)
         
-        gas_price = w3.eth.gas_price
+        gas_price = int(w3.eth.gas_price * 1.15)
         logger.info("[%s] Gas price: %s GWEI", network_name, w3.from_wei(gas_price, 'gwei'))
         
         logger.info("[%s] Building transaction...", network_name)
