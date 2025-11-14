@@ -66,20 +66,9 @@ COVALENT_API_KEY = "cqt_rQGRckM6MCcQHYTYPyPfCjFtxKmh"
 EMAIL_RECIPIENT = os.getenv('EMAIL_RECIPIENT')
 
 # ---------------------------
-# Snowtrace txlist URL (with API key)
+# Snowtrace API base URL
 # ---------------------------
-SNOWTRACE_TX_URL = (
-    "https://api.snowtrace.io/api"
-    "?module=account"
-    "&action=txlist"
-    "&address={}"
-    "&startblock=1"
-    "&endblock=99999999"
-    "&page=1"
-    "&offset=200"
-    "&sort=desc"
-    f"&apikey={SNOWTRACE_API_KEY}"
-)
+SNOWTRACE_BASE_URL = "https://api.snowtrace.io/api"
 
 # ---------------------------
 # Covalent balances_v2 endpoint
@@ -167,65 +156,106 @@ def update_scraper_status(status, wallets_collected=0, message=""):
 # Step 1 — Collect raw Avalanche wallets
 # ============================================
 def fetch_raw_wallets(limit=20000):
-    """Fetch raw wallet addresses from Snowtrace (using API key)"""
+    """Fetch raw wallet addresses from Snowtrace using tokentx and txlistinternal endpoints"""
     wallets = set()
     logger.info("📡 Collecting active wallets (raw) from Snowtrace API...")
+    logger.info("🔍 Using tokentx (ERC20 swaps) + txlistinternal (AVAX swaps) endpoints")
     
-    # Using known active contracts
+    # Using known active contracts (DEX Routers)
     active_contracts = [
         "0xE54Ca86531e17Ef3616d22Ca28b0D458b6C89106",  # Pangolin Router
         "0x9e90F9B1C0904b8C474b05c226c1E18b1dA53fC7",  # Trader Joe Router
     ]
     
     errors_encountered = []
+    endpoints_processed = 0
+    
     for contract in active_contracts:
-        url = SNOWTRACE_TX_URL.format(contract)
-        try:
-            resp = requests.get(url, timeout=30)
-            resp.raise_for_status()  # Raise exception for bad status codes
-            data = resp.json()
-            if "result" not in data:
-                logger.warning("No 'result' field in response from %s", contract)
-                continue
-            
-            for tx in data["result"]:
-                if tx.get("from"):
-                    wallets.add(tx["from"].lower())
-                if tx.get("to"):
-                    wallets.add(tx["to"].lower())
+        logger.info(f"📡 Processing contract: {contract}")
+        
+        # 1. ERC20 token transfers (captures swaps via tokens)
+        tokentx_url = (
+            f"{SNOWTRACE_BASE_URL}"
+            f"?module=account&action=tokentx"
+            f"&contractaddress={contract}"
+            f"&page=1&offset=10000&sort=desc&apikey={SNOWTRACE_API_KEY}"
+        )
+        
+        # 2. Internal TX (captures AVAX swaps via internal calls)
+        internaltx_url = (
+            f"{SNOWTRACE_BASE_URL}"
+            f"?module=account&action=txlistinternal"
+            f"&address={contract}"
+            f"&page=1&offset=10000&sort=desc&apikey={SNOWTRACE_API_KEY}"
+        )
+        
+        # Process both endpoints for each contract
+        for endpoint_name, url in [("tokentx", tokentx_url), ("txlistinternal", internaltx_url)]:
+            try:
+                logger.debug(f"Fetching {endpoint_name} for {contract}...")
+                resp = requests.get(url, timeout=20)
+                resp.raise_for_status()
+                data = resp.json()
                 
-                if len(wallets) >= limit:
-                    logger.info(f"✔ Collected {len(wallets)} raw wallets")
-                    return list(wallets)
-        except requests.exceptions.Timeout as e:
-            error_msg = f"Timeout fetching from contract {contract}: {str(e)}"
-            logger.error("❌ %s", error_msg, exc_info=True)
-            errors_encountered.append(error_msg)
-            continue
-        except requests.exceptions.RequestException as e:
-            error_msg = f"Request error fetching from contract {contract}: {str(e)}"
-            logger.error("❌ %s", error_msg, exc_info=True)
-            errors_encountered.append(error_msg)
-            continue
-        except json.JSONDecodeError as e:
-            error_msg = f"JSON decode error from contract {contract}: {str(e)}"
-            logger.error("❌ %s", error_msg, exc_info=True)
-            errors_encountered.append(error_msg)
-            continue
-        except Exception as e:
-            error_msg = f"Unexpected error fetching from contract {contract}: {str(e)}"
-            logger.error("❌ %s", error_msg, exc_info=True)
-            errors_encountered.append(error_msg)
-            continue
+                if "result" not in data:
+                    logger.warning(f"No 'result' field in {endpoint_name} response from {contract}")
+                    continue
+                
+                result_count = len(data["result"]) if isinstance(data["result"], list) else 0
+                logger.info(f"✅ {endpoint_name} for {contract}: {result_count} transactions found")
+                
+                for tx in data["result"]:
+                    if tx.get("from"):
+                        wallets.add(tx["from"].lower())
+                    if tx.get("to"):
+                        wallets.add(tx["to"].lower())
+                    
+                    if len(wallets) >= limit:
+                        logger.info(f"✔ Collected {len(wallets)} raw wallets (target reached)")
+                        return list(wallets)
+                
+                endpoints_processed += 1
+                
+            except requests.exceptions.Timeout as e:
+                error_msg = f"Timeout fetching {endpoint_name} from contract {contract}: {str(e)}"
+                logger.warning("⚠️ %s", error_msg)
+                errors_encountered.append(error_msg)
+                continue
+            except requests.exceptions.RequestException as e:
+                error_msg = f"Request error fetching {endpoint_name} from contract {contract}: {str(e)}"
+                logger.error("❌ %s", error_msg, exc_info=True)
+                errors_encountered.append(error_msg)
+                continue
+            except json.JSONDecodeError as e:
+                error_msg = f"JSON decode error from {endpoint_name} for contract {contract}: {str(e)}"
+                logger.error("❌ %s", error_msg, exc_info=True)
+                errors_encountered.append(error_msg)
+                continue
+            except Exception as e:
+                error_msg = f"Unexpected error fetching {endpoint_name} from contract {contract}: {str(e)}"
+                logger.error("❌ %s", error_msg, exc_info=True)
+                errors_encountered.append(error_msg)
+                continue
+    
+    # Log summary
+    logger.info("=" * 60)
+    logger.info(f"📊 Collection Summary:")
+    logger.info(f"   ✅ Endpoints processed: {endpoints_processed}/4")
+    logger.info(f"   ✅ Unique wallets collected: {len(wallets)}")
+    logger.info(f"   ⚠️  Errors encountered: {len(errors_encountered)}")
+    logger.info("=" * 60)
     
     # Send error email if we encountered errors and collected few wallets
     if errors_encountered and len(wallets) < limit / 2:
-        error_details = "\n".join(errors_encountered)
+        error_details = "\n".join(errors_encountered[:10])  # Limit to first 10 errors
         send_error_email("Raw Wallet Fetch Errors", 
-                        f"Encountered {len(errors_encountered)} errors while fetching raw wallets. Only collected {len(wallets)} wallets.", 
+                        f"Encountered {len(errors_encountered)} errors while fetching raw wallets. Only collected {len(wallets)} wallets (target: {limit}).", 
                         error_details)
     
-    logger.info(f"✔ Collected {len(wallets)} raw wallets")
+    if len(wallets) < 100:
+        logger.warning(f"⚠️ Low wallet count: {len(wallets)} wallets collected. This may affect filtering results.")
+    
+    logger.info(f"✔ Total raw wallets collected: {len(wallets)}")
     return list(wallets)
 
 # ============================================
