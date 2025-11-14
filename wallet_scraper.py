@@ -380,10 +380,15 @@ def run_scraper():
     """Main scraper function - single run mode"""
     logger.info("=" * 60)
     logger.info("🚀 Avalanche Wallet Scraper Starting")
+    logger.info(f"📅 Start Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info(f"🎯 Target: {DAILY_TARGET} wallets")
+    logger.info(f"📊 Raw Wallet Target: {RAW_WALLET_TARGET}")
+    logger.info(f"💰 USD Threshold: ${USD_THRESHOLD}")
+    logger.info(f"📁 Scraped Wallets File: {SCRAPED_WALLETS_FILE}")
     logger.info("=" * 60)
     
     # Get Moralis API key
+    logger.info("🔑 Step 1/6: Retrieving Moralis API key...")
     try:
         moralis_api_key = get_moralis_api_key()
         if not moralis_api_key or moralis_api_key == 'YOUR_MORALIS_API_KEY_HERE':
@@ -392,6 +397,7 @@ def run_scraper():
             send_error_email("Configuration Error", error_msg, "Please set MORALIS_API_KEY or update the hardcoded value in wallet_scraper.py")
             update_scraper_status("stopped", 0, error_msg)
             return
+        logger.info("✅ Moralis API key retrieved successfully")
     except Exception as e:
         error_msg = f"Failed to get Moralis API key: {str(e)}"
         logger.error("❌ %s", error_msg, exc_info=True)
@@ -400,10 +406,15 @@ def run_scraper():
         return
     
     # Load existing wallets and master set
+    logger.info("📂 Step 2/6: Loading existing scraped wallets...")
     try:
         existing_wallets, master_set = load_scraped_wallets()
-        logger.info(f"📂 Loaded {len(existing_wallets)} existing wallets")
-        logger.info(f"📂 Master set size: {len(master_set)}")
+        logger.info(f"✅ Loaded {len(existing_wallets)} existing wallets from {SCRAPED_WALLETS_FILE}")
+        logger.info(f"✅ Master deduplication set size: {len(master_set)} addresses")
+        if len(existing_wallets) > 0:
+            used_count = sum(1 for w in existing_wallets if w.get('used', False))
+            available_count = len(existing_wallets) - used_count
+            logger.info(f"📊 Existing wallets: {available_count} available, {used_count} used")
     except Exception as e:
         error_msg = f"Failed to load existing wallets: {str(e)}"
         logger.error("❌ %s", error_msg, exc_info=True)
@@ -412,15 +423,19 @@ def run_scraper():
         return
     
     # Update status
+    logger.info("📝 Step 3/6: Updating scraper status...")
     try:
         update_scraper_status("running", len(existing_wallets), "Scraper started")
+        logger.info("✅ Status file updated")
     except Exception as e:
-        logger.warning("Failed to update initial status: %s", e)
+        logger.warning("⚠️ Failed to update initial status: %s", e)
     
     # Fetch raw wallets
+    logger.info("📡 Step 4/6: Fetching raw wallets from Snowtrace API...")
+    logger.info(f"🎯 Target: {RAW_WALLET_TARGET} raw wallet addresses")
     try:
         raw_wallets = fetch_raw_wallets(RAW_WALLET_TARGET)
-        logger.info(f"🔍 Filtering {len(raw_wallets)} raw wallets...")
+        logger.info(f"✅ Collected {len(raw_wallets)} raw wallet addresses from Snowtrace")
         
         if len(raw_wallets) == 0:
             error_msg = "No raw wallets collected from Snowtrace API"
@@ -428,6 +443,10 @@ def run_scraper():
             send_error_email("Data Collection Error", error_msg, "Check Snowtrace API availability and network connectivity")
             update_scraper_status("stopped", len(existing_wallets), error_msg)
             return
+        
+        if len(raw_wallets) < RAW_WALLET_TARGET / 2:
+            logger.warning("⚠️ Collected only %d raw wallets (target: %d) - may affect final count", 
+                          len(raw_wallets), RAW_WALLET_TARGET)
     except Exception as e:
         error_msg = f"Failed to fetch raw wallets: {str(e)}"
         logger.error("❌ %s", error_msg, exc_info=True)
@@ -435,32 +454,55 @@ def run_scraper():
         update_scraper_status("stopped", len(existing_wallets), error_msg)
         return
     
+    # Filter and enrich wallets
+    logger.info("🔍 Step 5/6: Filtering and enriching wallets...")
+    logger.info(f"📋 Processing {len(raw_wallets)} raw wallets")
+    logger.info(f"🎯 Filtering criteria:")
+    logger.info(f"   - EOA only (no contracts)")
+    logger.info(f"   - USD balance >= ${USD_THRESHOLD}")
+    logger.info(f"   - Not in existing master set")
+    
     cleaned_wallets = []
     checked = 0
+    skipped_duplicate = 0
+    skipped_invalid = 0
+    skipped_contract = 0
+    skipped_low_balance = 0
     
     for wallet in raw_wallets:
         wallet = wallet.lower()
         checked += 1
         
+        # Log progress every 1000 wallets
+        if checked % 1000 == 0:
+            logger.info(f"📊 Progress: Checked {checked}/{len(raw_wallets)} wallets | "
+                       f"Valid: {len(cleaned_wallets)} | "
+                       f"Skipped: {skipped_duplicate + skipped_invalid + skipped_contract + skipped_low_balance}")
+        
         # Skip if already in master set
         if wallet in master_set:
+            skipped_duplicate += 1
             continue
         
         # Skip invalid addresses
         if not w3.is_address(wallet):
+            skipped_invalid += 1
             continue
         
         # Check EOA
         if not is_eoa(wallet):
+            skipped_contract += 1
             continue
         
         # USD balance check
         try:
             usd = get_usd_value(wallet, moralis_api_key)
             if usd < USD_THRESHOLD:
+                skipped_low_balance += 1
                 continue
         except Exception as e:
-            logger.warning("Error getting USD value for %s, skipping: %s", wallet, e)
+            logger.warning("⚠️ Error getting USD value for %s, skipping: %s", wallet, e)
+            skipped_low_balance += 1
             continue
         
         # Valid wallet - add to list
@@ -473,41 +515,69 @@ def run_scraper():
         cleaned_wallets.append(wallet_entry)
         master_set.add(wallet)
         
-        logger.info(f"✔ {wallet} | ${usd:.2f} added ({len(cleaned_wallets)}/{DAILY_TARGET})")
+        logger.info(f"✔ [{len(cleaned_wallets)}/{DAILY_TARGET}] {wallet} | ${usd:.2f} USD")
         
         # Update status periodically
         if len(cleaned_wallets) % 100 == 0:
-            update_scraper_status("running", len(existing_wallets) + len(cleaned_wallets), 
-                                f"Progress: {len(cleaned_wallets)}/{DAILY_TARGET}")
+            total_wallets = len(existing_wallets) + len(cleaned_wallets)
+            progress_pct = (len(cleaned_wallets) / DAILY_TARGET) * 100
+            update_scraper_status("running", total_wallets, 
+                                f"Progress: {len(cleaned_wallets)}/{DAILY_TARGET} ({progress_pct:.1f}%)")
+            logger.info(f"📈 Status updated: {len(cleaned_wallets)}/{DAILY_TARGET} ({progress_pct:.1f}%)")
         
         # Stop when target reached
         if len(cleaned_wallets) >= DAILY_TARGET:
             logger.info(f"✅ Target reached: {len(cleaned_wallets)} wallets collected")
             break
     
-    # Combine with existing wallets
+    # Log filtering statistics
+    logger.info("=" * 60)
+    logger.info("📊 Filtering Statistics:")
+    logger.info(f"   ✅ Valid wallets collected: {len(cleaned_wallets)}")
+    logger.info(f"   ⏭️  Skipped (duplicate): {skipped_duplicate}")
+    logger.info(f"   ⏭️  Skipped (invalid address): {skipped_invalid}")
+    logger.info(f"   ⏭️  Skipped (contract, not EOA): {skipped_contract}")
+    logger.info(f"   ⏭️  Skipped (low balance < ${USD_THRESHOLD}): {skipped_low_balance}")
+    logger.info(f"   📋 Total checked: {checked}")
+    logger.info("=" * 60)
+    
+    # Combine with existing wallets and save
+    logger.info("💾 Step 6/6: Saving scraped wallets...")
     try:
         all_wallets = existing_wallets + cleaned_wallets
         
         # Save wallets
+        logger.info(f"💾 Saving {len(all_wallets)} total wallets to {SCRAPED_WALLETS_FILE}...")
         save_scraped_wallets(all_wallets, master_set)
+        logger.info(f"✅ Wallets saved successfully")
         
         total_collected = len(cleaned_wallets)
-        logger.info(f"📊 Total new wallets collected: {total_collected}")
-        logger.info(f"📊 Total wallets in database: {len(all_wallets)}")
+        logger.info("=" * 60)
+        logger.info("📊 Final Statistics:")
+        logger.info(f"   🆕 New wallets collected this run: {total_collected}")
+        logger.info(f"   📁 Total wallets in database: {len(all_wallets)}")
+        logger.info(f"   🎯 Target was: {DAILY_TARGET}")
+        if total_collected < DAILY_TARGET:
+            logger.warning(f"   ⚠️  Collected {total_collected} wallets (target: {DAILY_TARGET}) - {DAILY_TARGET - total_collected} short")
+        logger.info("=" * 60)
         
         # Update final status
         try:
-            update_scraper_status("completed", len(all_wallets), 
-                                 f"Successfully collected {total_collected} new wallets")
+            status_msg = f"Successfully collected {total_collected} new wallets"
+            if total_collected < DAILY_TARGET:
+                status_msg += f" ({DAILY_TARGET - total_collected} short of target)"
+            update_scraper_status("completed", len(all_wallets), status_msg)
+            logger.info("✅ Final status updated")
         except Exception as e:
-            logger.error("Failed to update final status: %s", e, exc_info=True)
+            logger.error("❌ Failed to update final status: %s", e, exc_info=True)
         
         # Send completion email
+        logger.info("📧 Sending completion email...")
         send_completion_email(total_collected)
         
         logger.info("=" * 60)
         logger.info("🎉 Scraper completed successfully!")
+        logger.info(f"⏱️  End Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         logger.info("=" * 60)
     except Exception as e:
         error_msg = f"Failed to save results or send completion notification: {str(e)}"

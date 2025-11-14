@@ -82,6 +82,10 @@
                             <span class="text-gray-400">Target:</span>
                             <span class="font-bold" id="scraperTarget">4000</span>
                         </div>
+                        <div class="flex justify-between">
+                            <span class="text-gray-400">Process ID:</span>
+                            <span class="font-mono text-sm" id="scraperPid">-</span>
+                        </div>
                         <div class="text-sm text-gray-400 mt-2" id="scraperMessage"></div>
                     </div>
                 </div>
@@ -211,10 +215,18 @@
         </div>
 
         <!-- Bot Logs -->
-        <div class="bg-gray-800 rounded-lg p-6 shadow-lg">
+        <div class="bg-gray-800 rounded-lg p-6 mb-6 shadow-lg">
             <h2 class="text-2xl font-bold mb-4">📋 Bot Logs (Last 50 lines)</h2>
             <div class="bg-gray-900 rounded p-4 font-mono text-xs overflow-auto max-h-96">
                 <div id="logsContainer">Loading logs...</div>
+            </div>
+        </div>
+
+        <!-- Scraper Logs -->
+        <div class="bg-gray-800 rounded-lg p-6 shadow-lg">
+            <h2 class="text-2xl font-bold mb-4">🔍 Scraper Logs (Last 50 lines)</h2>
+            <div class="bg-gray-900 rounded p-4 font-mono text-xs overflow-auto max-h-96">
+                <div id="scraperLogsContainer">Loading logs...</div>
             </div>
         </div>
     </div>
@@ -367,6 +379,30 @@
             }
         }
 
+        async function loadScraperLogs() {
+            try {
+                const response = await fetch(`${API_URL}/scraper/logs?lines=50`);
+                const data = await response.json();
+                
+                const logsContainer = document.getElementById('scraperLogsContainer');
+                
+                if (data.logs.length === 0) {
+                    logsContainer.textContent = 'No scraper logs available';
+                    return;
+                }
+                
+                logsContainer.innerHTML = data.logs.map(log => 
+                    `<div class="mb-1">${escapeHtml(log)}</div>`
+                ).join('');
+                
+                logsContainer.scrollTop = logsContainer.scrollHeight;
+            } catch (error) {
+                console.error('Error loading scraper logs:', error);
+                const logsContainer = document.getElementById('scraperLogsContainer');
+                logsContainer.innerHTML = `<div class="text-red-400">Error loading logs: ${escapeHtml(error.message)}</div>`;
+            }
+        }
+
         async function downloadCSV() {
             try {
                 window.open(`${API_URL}/export/csv`, '_blank');
@@ -432,6 +468,7 @@
                 
                 document.getElementById('scraperWalletsCollected').textContent = data.wallets_collected || 0;
                 document.getElementById('scraperTarget').textContent = data.target || 4000;
+                document.getElementById('scraperPid').textContent = data.pid ? data.pid.toString() : '-';
                 document.getElementById('scraperMessage').textContent = data.message || '';
             } catch (error) {
                 console.error('Error checking scraper status:', error);
@@ -569,6 +606,7 @@
             checkScraperStatus();
             loadScraperStats();
             loadWalletMode();
+            loadScraperLogs();
         }
 
         // Initial load

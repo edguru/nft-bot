@@ -326,6 +326,7 @@ def get_next_scraped_wallet():
     """Get next available scraped wallet"""
     try:
         if not os.path.exists(SCRAPED_WALLETS_FILE):
+            logger.debug("No scraped wallets file found at %s", SCRAPED_WALLETS_FILE)
             return None
         
         with open(SCRAPED_WALLETS_FILE, 'r') as f:
@@ -333,14 +334,26 @@ def get_next_scraped_wallet():
         
         wallets = data.get('wallets', [])
         
+        if len(wallets) == 0:
+            logger.debug("Scraped wallets file exists but contains no wallets")
+            return None
+        
         # Find first unused wallet
+        available_count = 0
         for wallet in wallets:
             if not wallet.get('used', False):
+                available_count += 1
+                logger.debug("Found available scraped wallet: %s (USD: $%.2f)", 
+                           wallet.get('address'), wallet.get('usd_value', 0))
                 return wallet
         
+        logger.info("All %d scraped wallets have been used", len(wallets))
         return None  # No available scraped wallets
+    except json.JSONDecodeError as e:
+        logger.error("❌ JSON decode error reading scraped wallets: %s", e, exc_info=True)
+        return None
     except Exception as e:
-        logger.error("Error reading scraped wallets: %s", e)
+        logger.error("❌ Error reading scraped wallets: %s", e, exc_info=True)
         return None
 
 def mark_scraped_wallet_used(address):
@@ -401,24 +414,26 @@ def generate_new_wallet():
 def get_wallet_for_minting():
     """Get wallet for minting - tries scraped first, then generates"""
     mode = get_wallet_mode()
+    logger.debug("Wallet mode: %s", mode)
     
-    # Try scraped wallet first if mode is scraped or if we want to prioritize scraped
-    if mode == 'scraped' or True:  # Always try scraped first per requirements
-        scraped_wallet = get_next_scraped_wallet()
-        if scraped_wallet:
-            # Convert scraped wallet format to bot format
-            wallet = {
-                'address': scraped_wallet['address'],
-                'private_key': None,  # Scraped wallets don't have private keys
-                'source': 'scraped',
-                'usd_value': scraped_wallet.get('usd_value', 0)
-            }
-            logger.info("✅ Using scraped wallet: %s (USD: $%.2f)", wallet['address'], wallet['usd_value'])
-            return wallet
+    # Always try scraped wallet first per requirements
+    scraped_wallet = get_next_scraped_wallet()
+    if scraped_wallet:
+        # Convert scraped wallet format to bot format
+        wallet = {
+            'address': scraped_wallet['address'],
+            'private_key': None,  # Scraped wallets don't have private keys
+            'source': 'scraped',
+            'usd_value': scraped_wallet.get('usd_value', 0)
+        }
+        logger.info("✅ Using scraped wallet: %s (USD: $%.2f)", wallet['address'], wallet['usd_value'])
+        return wallet
     
     # Fall back to generated wallet
+    logger.info("No scraped wallets available, generating new wallet...")
     wallet = generate_new_wallet()
     wallet['source'] = 'generated'
+    logger.info("✅ Generated new wallet: %s", wallet['address'])
     return wallet
 
 def check_gas_balance(w3, address):

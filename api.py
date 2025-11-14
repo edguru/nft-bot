@@ -217,6 +217,26 @@ def get_logs():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/scraper/logs', methods=['GET'])
+def get_scraper_logs():
+    """Get scraper logs"""
+    try:
+        lines = int(request.args.get('lines', 100))
+        scraper_log = 'scraper.log'
+        
+        if not os.path.exists(scraper_log):
+            return jsonify({'logs': []})
+        
+        with open(scraper_log, 'r') as f:
+            all_lines = f.readlines()
+            recent_lines = all_lines[-lines:]
+        
+        return jsonify({
+            'logs': [line.strip() for line in recent_lines]
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 # ============================================
 # EXPORT & EMAIL
 # ============================================
