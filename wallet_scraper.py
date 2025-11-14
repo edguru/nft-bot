@@ -28,7 +28,7 @@ def setup_logging():
     
     # File handler
     file_handler = logging.FileHandler('scraper.log', mode='w')
-    file_handler.setLevel(logging.INFO)
+    file_handler.setLevel(logging.DEBUG)  # Capture all levels including errors
     file_handler.setFormatter(formatter)
     
     # Console handler
@@ -88,17 +88,30 @@ def get_moralis_api_key():
 # ============================================
 def load_scraped_wallets():
     """Load scraped wallets from JSON file"""
-    if os.path.exists(SCRAPED_WALLETS_FILE):
-        try:
-            with open(SCRAPED_WALLETS_FILE, "r") as f:
-                data = json.load(f)
-                wallets = data.get("wallets", [])
-                master_set = set(data.get("master_set", []))
-                return wallets, master_set
-        except Exception as e:
-            logger.error("Error loading scraped wallets: %s", e)
-            return [], set()
-    return [], set()
+    try:
+        if os.path.exists(SCRAPED_WALLETS_FILE):
+            try:
+                with open(SCRAPED_WALLETS_FILE, "r") as f:
+                    data = json.load(f)
+                    wallets = data.get("wallets", [])
+                    master_set = set(data.get("master_set", []))
+                    return wallets, master_set
+            except json.JSONDecodeError as e:
+                error_msg = f"Failed to parse JSON file {SCRAPED_WALLETS_FILE}: {str(e)}"
+                logger.error("❌ %s", error_msg, exc_info=True)
+                send_error_email("JSON Parse Error", error_msg, str(e))
+                return [], set()
+            except Exception as e:
+                error_msg = f"Error loading scraped wallets from {SCRAPED_WALLETS_FILE}: {str(e)}"
+                logger.error("❌ %s", error_msg, exc_info=True)
+                send_error_email("File Read Error", error_msg, str(e))
+                return [], set()
+        return [], set()
+    except Exception as e:
+        error_msg = f"Unexpected error in load_scraped_wallets: {str(e)}"
+        logger.error("❌ %s", error_msg, exc_info=True)
+        send_error_email("Unexpected Error", error_msg, str(e))
+        return [], set()
 
 def save_scraped_wallets(wallets, master_set):
     """Save scraped wallets to JSON file"""
@@ -111,8 +124,18 @@ def save_scraped_wallets(wallets, master_set):
         with open(SCRAPED_WALLETS_FILE, "w") as f:
             json.dump(data, f, indent=2)
         logger.info("✅ Saved %d wallets to %s", len(wallets), SCRAPED_WALLETS_FILE)
+    except PermissionError as e:
+        error_msg = f"Permission denied when saving to {SCRAPED_WALLETS_FILE}: {str(e)}"
+        logger.error("❌ %s", error_msg, exc_info=True)
+        send_error_email("File Permission Error", error_msg, str(e))
+    except OSError as e:
+        error_msg = f"OS error when saving to {SCRAPED_WALLETS_FILE}: {str(e)}"
+        logger.error("❌ %s", error_msg, exc_info=True)
+        send_error_email("File System Error", error_msg, str(e))
     except Exception as e:
-        logger.error("❌ Error saving scraped wallets: %s", e)
+        error_msg = f"Unexpected error saving scraped wallets: {str(e)}"
+        logger.error("❌ %s", error_msg, exc_info=True)
+        send_error_email("Save Error", error_msg, str(e))
 
 def update_scraper_status(status, wallets_collected=0, message=""):
     """Update scraper status file"""
@@ -127,7 +150,9 @@ def update_scraper_status(status, wallets_collected=0, message=""):
         with open(SCRAPER_STATUS_FILE, "w") as f:
             json.dump(status_data, f, indent=2)
     except Exception as e:
-        logger.error("❌ Error updating status: %s", e)
+        error_msg = f"Failed to update scraper status file: {str(e)}"
+        logger.error("❌ %s", error_msg, exc_info=True)
+        send_error_email("Status Update Error", error_msg, str(e))
 
 # ============================================
 # Step 1 — Collect raw Avalanche wallets
@@ -143,12 +168,15 @@ def fetch_raw_wallets(limit=20000):
         "0x9e90F9B1C0904b8C474b05c226c1E18b1dA53fC7",  # Trader Joe Router
     ]
     
+    errors_encountered = []
     for contract in active_contracts:
         url = SNOWTRACE_TX_URL.format(contract)
         try:
             resp = requests.get(url, timeout=30)
+            resp.raise_for_status()  # Raise exception for bad status codes
             data = resp.json()
             if "result" not in data:
+                logger.warning("No 'result' field in response from %s", contract)
                 continue
             
             for tx in data["result"]:
@@ -160,9 +188,33 @@ def fetch_raw_wallets(limit=20000):
                 if len(wallets) >= limit:
                     logger.info(f"✔ Collected {len(wallets)} raw wallets")
                     return list(wallets)
-        except Exception as e:
-            logger.warning("Error fetching from %s: %s", contract, e)
+        except requests.exceptions.Timeout as e:
+            error_msg = f"Timeout fetching from contract {contract}: {str(e)}"
+            logger.error("❌ %s", error_msg, exc_info=True)
+            errors_encountered.append(error_msg)
             continue
+        except requests.exceptions.RequestException as e:
+            error_msg = f"Request error fetching from contract {contract}: {str(e)}"
+            logger.error("❌ %s", error_msg, exc_info=True)
+            errors_encountered.append(error_msg)
+            continue
+        except json.JSONDecodeError as e:
+            error_msg = f"JSON decode error from contract {contract}: {str(e)}"
+            logger.error("❌ %s", error_msg, exc_info=True)
+            errors_encountered.append(error_msg)
+            continue
+        except Exception as e:
+            error_msg = f"Unexpected error fetching from contract {contract}: {str(e)}"
+            logger.error("❌ %s", error_msg, exc_info=True)
+            errors_encountered.append(error_msg)
+            continue
+    
+    # Send error email if we encountered errors and collected few wallets
+    if errors_encountered and len(wallets) < limit / 2:
+        error_details = "\n".join(errors_encountered)
+        send_error_email("Raw Wallet Fetch Errors", 
+                        f"Encountered {len(errors_encountered)} errors while fetching raw wallets. Only collected {len(wallets)} wallets.", 
+                        error_details)
     
     logger.info(f"✔ Collected {len(wallets)} raw wallets")
     return list(wallets)
@@ -175,6 +227,9 @@ def is_eoa(address):
     try:
         code = w3.eth.get_code(Web3.to_checksum_address(address))
         return code == b''
+    except ValueError as e:
+        logger.warning("Invalid address format for EOA check %s: %s", address, e)
+        return False
     except Exception as e:
         logger.warning("Error checking EOA for %s: %s", address, e)
         return False
@@ -188,15 +243,84 @@ def get_usd_value(address, moralis_api_key):
     headers = {"X-API-Key": moralis_api_key}
     try:
         resp = requests.get(url, headers=headers, timeout=30)
-        if resp.status_code != 200:
+        if resp.status_code == 401:
+            error_msg = f"Moralis API authentication failed (401) for address {address}. Check API key."
+            logger.error("❌ %s", error_msg)
+            send_error_email("Moralis API Authentication Error", error_msg, f"Status code: {resp.status_code}")
             return 0
+        elif resp.status_code == 429:
+            error_msg = f"Moralis API rate limit exceeded (429) for address {address}"
+            logger.warning("⚠️ %s", error_msg)
+            # Don't send email for rate limits, just log
+            return 0
+        elif resp.status_code != 200:
+            logger.warning("Moralis API returned status %d for address %s", resp.status_code, address)
+            return 0
+        
         data = resp.json()
         chains = data.get("chains", {})
         avax_data = chains.get("43114", {})  # Avalanche chainId
         return float(avax_data.get("usd_value", 0))
-    except Exception as e:
-        logger.warning("Error getting USD value for %s: %s", address, e)
+    except requests.exceptions.Timeout as e:
+        logger.warning("Timeout getting USD value for %s: %s", address, e)
         return 0
+    except requests.exceptions.RequestException as e:
+        error_msg = f"Request error getting USD value for {address}: {str(e)}"
+        logger.error("❌ %s", error_msg, exc_info=True)
+        send_error_email("Moralis API Request Error", error_msg, str(e))
+        return 0
+    except (ValueError, KeyError) as e:
+        logger.warning("Error parsing USD value response for %s: %s", address, e)
+        return 0
+    except Exception as e:
+        error_msg = f"Unexpected error getting USD value for {address}: {str(e)}"
+        logger.error("❌ %s", error_msg, exc_info=True)
+        send_error_email("Moralis API Error", error_msg, str(e))
+        return 0
+
+# ============================================
+# ERROR EMAIL NOTIFICATION
+# ============================================
+def send_error_email(subject, error_message, error_details=None):
+    """Send error notification via email"""
+    try:
+        if not EMAIL_RECIPIENT:
+            logger.warning("No EMAIL_RECIPIENT configured, skipping error email")
+            return
+        
+        from email.mime.multipart import MIMEMultipart
+        from email.mime.text import MIMEText
+        
+        msg = MIMEMultipart()
+        msg['Subject'] = f'🚨 Scraper Error: {subject}'
+        msg['From'] = EMAIL_RECIPIENT
+        msg['To'] = EMAIL_RECIPIENT
+        
+        details_section = ""
+        if error_details:
+            details_section = f"\n\nError Details:\n{error_details}"
+        
+        body = MIMEText(f"""
+Wallet Scraper - Error Alert
+
+Date: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+
+{error_message}{details_section}
+
+Please check the scraper logs for more information.
+
+This is an automated email from your NFT Minting Bot.
+        """)
+        msg.attach(body)
+        
+        ses_client.send_raw_email(
+            Source=EMAIL_RECIPIENT,
+            Destinations=[EMAIL_RECIPIENT],
+            RawMessage={'Data': msg.as_string()}
+        )
+        logger.info("✅ Error email sent successfully")
+    except Exception as e:
+        logger.error("❌ Failed to send error email: %s", e, exc_info=True)
 
 # ============================================
 # SEND COMPLETION EMAIL
@@ -241,7 +365,13 @@ This is an automated email from your NFT Minting Bot.
         )
         logger.info("✅ Completion email sent successfully")
     except Exception as e:
-        logger.error("❌ Failed to send completion email: %s", e)
+        error_msg = f"Failed to send completion email: {str(e)}"
+        logger.error("❌ %s", error_msg, exc_info=True)
+        # Try to send error email about email failure (but don't fail if this also fails)
+        try:
+            send_error_email("Email Send Failure", error_msg, str(e))
+        except:
+            pass
 
 # ============================================
 # SCRAPER MAIN FUNCTION
@@ -256,22 +386,54 @@ def run_scraper():
     # Get Moralis API key
     try:
         moralis_api_key = get_moralis_api_key()
+        if not moralis_api_key or moralis_api_key == 'YOUR_MORALIS_API_KEY_HERE':
+            error_msg = "Moralis API key is not configured or is using placeholder value"
+            logger.error("❌ %s", error_msg)
+            send_error_email("Configuration Error", error_msg, "Please set MORALIS_API_KEY or update the hardcoded value in wallet_scraper.py")
+            update_scraper_status("stopped", 0, error_msg)
+            return
     except Exception as e:
-        logger.error("❌ Failed to get Moralis API key: %s", e)
-        update_scraper_status("stopped", 0, f"Failed to get API key: {str(e)}")
+        error_msg = f"Failed to get Moralis API key: {str(e)}"
+        logger.error("❌ %s", error_msg, exc_info=True)
+        send_error_email("API Key Error", error_msg, str(e))
+        update_scraper_status("stopped", 0, error_msg)
         return
     
     # Load existing wallets and master set
-    existing_wallets, master_set = load_scraped_wallets()
-    logger.info(f"📂 Loaded {len(existing_wallets)} existing wallets")
-    logger.info(f"📂 Master set size: {len(master_set)}")
+    try:
+        existing_wallets, master_set = load_scraped_wallets()
+        logger.info(f"📂 Loaded {len(existing_wallets)} existing wallets")
+        logger.info(f"📂 Master set size: {len(master_set)}")
+    except Exception as e:
+        error_msg = f"Failed to load existing wallets: {str(e)}"
+        logger.error("❌ %s", error_msg, exc_info=True)
+        send_error_email("Load Error", error_msg, str(e))
+        update_scraper_status("stopped", 0, error_msg)
+        return
     
     # Update status
-    update_scraper_status("running", len(existing_wallets), "Scraper started")
+    try:
+        update_scraper_status("running", len(existing_wallets), "Scraper started")
+    except Exception as e:
+        logger.warning("Failed to update initial status: %s", e)
     
     # Fetch raw wallets
-    raw_wallets = fetch_raw_wallets(RAW_WALLET_TARGET)
-    logger.info(f"🔍 Filtering {len(raw_wallets)} raw wallets...")
+    try:
+        raw_wallets = fetch_raw_wallets(RAW_WALLET_TARGET)
+        logger.info(f"🔍 Filtering {len(raw_wallets)} raw wallets...")
+        
+        if len(raw_wallets) == 0:
+            error_msg = "No raw wallets collected from Snowtrace API"
+            logger.error("❌ %s", error_msg)
+            send_error_email("Data Collection Error", error_msg, "Check Snowtrace API availability and network connectivity")
+            update_scraper_status("stopped", len(existing_wallets), error_msg)
+            return
+    except Exception as e:
+        error_msg = f"Failed to fetch raw wallets: {str(e)}"
+        logger.error("❌ %s", error_msg, exc_info=True)
+        send_error_email("Fetch Error", error_msg, str(e))
+        update_scraper_status("stopped", len(existing_wallets), error_msg)
+        return
     
     cleaned_wallets = []
     checked = 0
@@ -293,8 +455,12 @@ def run_scraper():
             continue
         
         # USD balance check
-        usd = get_usd_value(wallet, moralis_api_key)
-        if usd < USD_THRESHOLD:
+        try:
+            usd = get_usd_value(wallet, moralis_api_key)
+            if usd < USD_THRESHOLD:
+                continue
+        except Exception as e:
+            logger.warning("Error getting USD value for %s, skipping: %s", wallet, e)
             continue
         
         # Valid wallet - add to list
@@ -320,25 +486,37 @@ def run_scraper():
             break
     
     # Combine with existing wallets
-    all_wallets = existing_wallets + cleaned_wallets
-    
-    # Save wallets
-    save_scraped_wallets(all_wallets, master_set)
-    
-    total_collected = len(cleaned_wallets)
-    logger.info(f"📊 Total new wallets collected: {total_collected}")
-    logger.info(f"📊 Total wallets in database: {len(all_wallets)}")
-    
-    # Update final status
-    update_scraper_status("completed", len(all_wallets), 
-                         f"Successfully collected {total_collected} new wallets")
-    
-    # Send completion email
-    send_completion_email(total_collected)
-    
-    logger.info("=" * 60)
-    logger.info("🎉 Scraper completed successfully!")
-    logger.info("=" * 60)
+    try:
+        all_wallets = existing_wallets + cleaned_wallets
+        
+        # Save wallets
+        save_scraped_wallets(all_wallets, master_set)
+        
+        total_collected = len(cleaned_wallets)
+        logger.info(f"📊 Total new wallets collected: {total_collected}")
+        logger.info(f"📊 Total wallets in database: {len(all_wallets)}")
+        
+        # Update final status
+        try:
+            update_scraper_status("completed", len(all_wallets), 
+                                 f"Successfully collected {total_collected} new wallets")
+        except Exception as e:
+            logger.error("Failed to update final status: %s", e, exc_info=True)
+        
+        # Send completion email
+        send_completion_email(total_collected)
+        
+        logger.info("=" * 60)
+        logger.info("🎉 Scraper completed successfully!")
+        logger.info("=" * 60)
+    except Exception as e:
+        error_msg = f"Failed to save results or send completion notification: {str(e)}"
+        logger.error("❌ %s", error_msg, exc_info=True)
+        send_error_email("Completion Error", error_msg, str(e))
+        try:
+            update_scraper_status("stopped", len(existing_wallets) + len(cleaned_wallets), error_msg)
+        except:
+            pass
 
 # ============================================
 # MAIN ENTRY POINT
@@ -352,10 +530,18 @@ if __name__ == "__main__":
         run_scraper()
     except KeyboardInterrupt:
         logger.info("👋 Scraper stopped by user")
-        update_scraper_status("stopped", 0, "Stopped by user")
+        try:
+            update_scraper_status("stopped", 0, "Stopped by user")
+        except:
+            pass
     except Exception as e:
-        logger.error("❌ Critical error: %s", e, exc_info=True)
-        update_scraper_status("stopped", 0, f"Error: {str(e)}")
+        error_msg = f"Critical error in scraper: {str(e)}"
+        logger.error("❌ %s", error_msg, exc_info=True)
+        send_error_email("Critical Scraper Error", error_msg, str(e))
+        try:
+            update_scraper_status("stopped", 0, f"Error: {str(e)}")
+        except:
+            pass
     finally:
         # Remove PID file
         if os.path.exists(SCRAPER_PID_FILE):
