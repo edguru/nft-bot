@@ -1,4 +1,4 @@
-# wallet_scraper.py - Avalanche Active Wallet Scraper (Moralis + Free RPC)
+# wallet_scraper.py - Avalanche Active Wallet Scraper (Covalent + Snowtrace + Free RPC)
 import requests
 import time
 import json
@@ -57,31 +57,40 @@ SCRAPER_PID_FILE = "scraper.pid"
 # AWS clients
 ses_client = boto3.client('ses')
 
-# Get configuration from environment or hardcode
-# Option 1: Hardcode directly (replace the string below with your actual API key)
-MORALIS_API_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJub25jZSI6IjQyMDAxYTg4LTQ4ZDUtNDcxNC04ZTJjLThjMzg4NTRjY2VlZCIsIm9yZ0lkIjoiNDgxNDM0IiwidXNlcklkIjoiNDk1MzAxIiwidHlwZUlkIjoiZDUwMmJhZGQtMWU5OS00YzEwLTg5YjQtMWJkMDJiOWFjNzViIiwidHlwZSI6IlBST0pFQ1QiLCJpYXQiOjE3NjMxNTkxNDksImV4cCI6NDkxODkxOTE0OX0.O80UwB0x7Is0sAAYnjLkL-TT6R16KRT_xKzfU_vKkrk' # TODO: Replace with your Moralis API key
-
-# Option 2: Or use environment variable (uncomment line below and comment line above)
-# MORALIS_API_KEY = os.getenv('MORALIS_API_KEY', 'YOUR_MORALIS_API_KEY_HERE')
+# ---------------------------
+# API KEYS
+# ---------------------------
+SNOWTRACE_API_KEY = "rs_e6e107e844449d143f5cd825"
+COVALENT_API_KEY = "cqt_rQGRckM6MCcQHYTYPyPfCjFtxKmh"
 
 EMAIL_RECIPIENT = os.getenv('EMAIL_RECIPIENT')
 
-# Public sources
-SNOWTRACE_TX_URL = "https://api.snowtrace.io/api?module=account&action=txlist&address={}&startblock=1&endblock=99999999&page=1&offset=200&sort=desc"
+# ---------------------------
+# Snowtrace txlist URL (with API key)
+# ---------------------------
+SNOWTRACE_TX_URL = (
+    "https://api.snowtrace.io/api"
+    "?module=account"
+    "&action=txlist"
+    "&address={}"
+    "&startblock=1"
+    "&endblock=99999999"
+    "&page=1"
+    "&offset=200"
+    "&sort=desc"
+    f"&apikey={SNOWTRACE_API_KEY}"
+)
+
+# ---------------------------
+# Covalent balances_v2 endpoint
+# ---------------------------
+COVALENT_BALANCES_URL = "https://api.covalenthq.com/v1/43114/address/{address}/balances_v2/?key=" + COVALENT_API_KEY
 
 # ============================================
 # RPC SETUP
 # ============================================
 w3 = Web3(Web3.HTTPProvider(AVAX_RPC))
 
-# ============================================
-# MORALIS API KEY
-# ============================================
-def get_moralis_api_key():
-    """Get Moralis API key (hardcoded or from environment)"""
-    if MORALIS_API_KEY == 'YOUR_MORALIS_API_KEY_HERE':
-        logger.warning("⚠️ Using default Moralis API key placeholder - please set MORALIS_API_KEY environment variable or update the code")
-    return MORALIS_API_KEY
 
 # ============================================
 # LOAD/SAVE SCRAPED WALLETS
@@ -158,9 +167,9 @@ def update_scraper_status(status, wallets_collected=0, message=""):
 # Step 1 — Collect raw Avalanche wallets
 # ============================================
 def fetch_raw_wallets(limit=20000):
-    """Fetch raw wallet addresses from Snowtrace"""
+    """Fetch raw wallet addresses from Snowtrace (using API key)"""
     wallets = set()
-    logger.info("📡 Collecting active wallets (raw)...")
+    logger.info("📡 Collecting active wallets (raw) from Snowtrace API...")
     
     # Using known active contracts
     active_contracts = [
@@ -235,47 +244,57 @@ def is_eoa(address):
         return False
 
 # ============================================
-# Step 3 — Get USD balance using Moralis
+# Step 3 — Get USD balance using Covalent
 # ============================================
-def get_usd_value(address, moralis_api_key):
-    """Get USD value of wallet using Moralis API"""
-    url = f"https://deep-index.moralis.io/api/v2.2/wallets/{address}"
-    headers = {"X-API-Key": moralis_api_key}
+def get_usd_value(address):
+    """Get USD token value using Covalent balances_v2 endpoint"""
+    url = COVALENT_BALANCES_URL.format(address=address)
     try:
-        resp = requests.get(url, headers=headers, timeout=30)
+        resp = requests.get(url, timeout=25)
         if resp.status_code == 401:
-            error_msg = f"Moralis API authentication failed (401) for address {address}. Check API key."
+            error_msg = f"Covalent API authentication failed (401) for address {address}. Check API key."
             logger.error("❌ %s", error_msg)
-            send_error_email("Moralis API Authentication Error", error_msg, f"Status code: {resp.status_code}")
+            send_error_email("Covalent API Authentication Error", error_msg, f"Status code: {resp.status_code}")
             return 0
         elif resp.status_code == 429:
-            error_msg = f"Moralis API rate limit exceeded (429) for address {address}"
+            error_msg = f"Covalent API rate limit exceeded (429) for address {address}"
             logger.warning("⚠️ %s", error_msg)
             # Don't send email for rate limits, just log
             return 0
         elif resp.status_code != 200:
-            logger.warning("Moralis API returned status %d for address %s", resp.status_code, address)
+            logger.warning("Covalent returned status %d for %s", resp.status_code, address)
             return 0
         
         data = resp.json()
-        chains = data.get("chains", {})
-        avax_data = chains.get("43114", {})  # Avalanche chainId
-        return float(avax_data.get("usd_value", 0))
+        # Covalent returns data.items[], each item has 'quote' field (USD value)
+        total_usd = 0.0
+        if "data" in data and isinstance(data["data"], dict):
+            items = data["data"].get("items", [])
+            for item in items:
+                try:
+                    q = item.get("quote", 0)
+                    if q:
+                        total_usd += float(q)
+                except (ValueError, TypeError) as e:
+                    logger.debug("Error parsing quote for item in %s: %s", address, e)
+                    continue
+        
+        return total_usd
     except requests.exceptions.Timeout as e:
-        logger.warning("Timeout getting USD value for %s: %s", address, e)
+        logger.warning("Timeout getting Covalent USD for %s: %s", address, e)
         return 0
     except requests.exceptions.RequestException as e:
-        error_msg = f"Request error getting USD value for {address}: {str(e)}"
+        error_msg = f"Request error getting Covalent USD for {address}: {str(e)}"
         logger.error("❌ %s", error_msg, exc_info=True)
-        send_error_email("Moralis API Request Error", error_msg, str(e))
+        send_error_email("Covalent API Request Error", error_msg, str(e))
         return 0
     except (ValueError, KeyError) as e:
-        logger.warning("Error parsing USD value response for %s: %s", address, e)
+        logger.warning("Error parsing Covalent USD value response for %s: %s", address, e)
         return 0
     except Exception as e:
-        error_msg = f"Unexpected error getting USD value for {address}: {str(e)}"
+        error_msg = f"Unexpected error getting Covalent USD for {address}: {str(e)}"
         logger.error("❌ %s", error_msg, exc_info=True)
-        send_error_email("Moralis API Error", error_msg, str(e))
+        send_error_email("Covalent API Error", error_msg, str(e))
         return 0
 
 # ============================================
@@ -387,23 +406,15 @@ def run_scraper():
     logger.info(f"📁 Scraped Wallets File: {SCRAPED_WALLETS_FILE}")
     logger.info("=" * 60)
     
-    # Get Moralis API key
-    logger.info("🔑 Step 1/6: Retrieving Moralis API key...")
-    try:
-        moralis_api_key = get_moralis_api_key()
-        if not moralis_api_key or moralis_api_key == 'YOUR_MORALIS_API_KEY_HERE':
-            error_msg = "Moralis API key is not configured or is using placeholder value"
-            logger.error("❌ %s", error_msg)
-            send_error_email("Configuration Error", error_msg, "Please set MORALIS_API_KEY or update the hardcoded value in wallet_scraper.py")
-            update_scraper_status("stopped", 0, error_msg)
-            return
-        logger.info("✅ Moralis API key retrieved successfully")
-    except Exception as e:
-        error_msg = f"Failed to get Moralis API key: {str(e)}"
-        logger.error("❌ %s", error_msg, exc_info=True)
-        send_error_email("API Key Error", error_msg, str(e))
+    # Check Covalent API key
+    logger.info("🔑 Step 1/6: Checking Covalent API key...")
+    if not COVALENT_API_KEY:
+        error_msg = "Covalent API key is not configured"
+        logger.error("❌ %s", error_msg)
+        send_error_email("Configuration Error", error_msg, "Please set COVALENT_API_KEY in the script or environment variable")
         update_scraper_status("stopped", 0, error_msg)
         return
+    logger.info("✅ Covalent API key available (using GoldRush product)")
     
     # Load existing wallets and master set
     logger.info("📂 Step 2/6: Loading existing scraped wallets...")
@@ -494,9 +505,9 @@ def run_scraper():
             skipped_contract += 1
             continue
         
-        # USD balance check
+        # USD balance check (Covalent)
         try:
-            usd = get_usd_value(wallet, moralis_api_key)
+            usd = get_usd_value(wallet)
             if usd < USD_THRESHOLD:
                 skipped_low_balance += 1
                 continue
