@@ -18,6 +18,10 @@ CORS(app)
 CSV_FILE = 'nft_minting_records.csv'
 PID_FILE = 'bot.pid'
 LOG_FILE = 'bot.log'
+SCRAPER_PID_FILE = 'scraper.pid'
+SCRAPER_STATUS_FILE = 'scraper_status.json'
+SCRAPED_WALLETS_FILE = 'scraped_wallets.json'
+WALLET_MODE_FILE = 'wallet_mode.json'
 
 s3_client = boto3.client('s3')
 sns_client = boto3.client('sns')
@@ -336,6 +340,174 @@ def list_s3_backups():
                 })
         
         return jsonify({'backups': backups})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+# ============================================
+# SCRAPER CONTROL
+# ============================================
+@app.route('/api/scraper/start', methods=['POST'])
+def start_scraper():
+    """Start the wallet scraper"""
+    try:
+        # Check if already running
+        if os.path.exists(SCRAPER_PID_FILE):
+            with open(SCRAPER_PID_FILE, 'r') as f:
+                pid = int(f.read().strip())
+            try:
+                os.kill(pid, 0)  # Check if process exists
+                return jsonify({'error': 'Scraper is already running', 'pid': pid}), 400
+            except OSError:
+                os.remove(SCRAPER_PID_FILE)
+        
+        # Start scraper process
+        scraper_log = 'scraper.log'
+        process = subprocess.Popen(
+            [sys.executable, 'wallet_scraper.py'],
+            stdout=open(scraper_log, 'a'),
+            stderr=subprocess.STDOUT,
+            preexec_fn=os.setpgrp
+        )
+        
+        # Save PID
+        with open(SCRAPER_PID_FILE, 'w') as f:
+            f.write(str(process.pid))
+        
+        return jsonify({
+            'success': True,
+            'message': 'Scraper started successfully',
+            'pid': process.pid
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/scraper/stop', methods=['POST'])
+def stop_scraper():
+    """Stop the wallet scraper"""
+    try:
+        if not os.path.exists(SCRAPER_PID_FILE):
+            return jsonify({'error': 'Scraper is not running'}), 400
+        
+        with open(SCRAPER_PID_FILE, 'r') as f:
+            pid = int(f.read().strip())
+        
+        try:
+            os.kill(pid, signal.SIGTERM)
+            os.remove(SCRAPER_PID_FILE)
+            return jsonify({
+                'success': True,
+                'message': 'Scraper stopped successfully'
+            })
+        except OSError:
+            os.remove(SCRAPER_PID_FILE)
+            return jsonify({'error': 'Scraper process not found'}), 404
+            
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/scraper/status', methods=['GET'])
+def scraper_status():
+    """Get scraper status"""
+    try:
+        is_running = False
+        pid = None
+        
+        if os.path.exists(SCRAPER_PID_FILE):
+            with open(SCRAPER_PID_FILE, 'r') as f:
+                pid = int(f.read().strip())
+            try:
+                os.kill(pid, 0)
+                is_running = True
+            except OSError:
+                os.remove(SCRAPER_PID_FILE)
+        
+        # Load status file
+        status_data = {
+            'running': is_running,
+            'pid': pid,
+            'status': 'stopped',
+            'wallets_collected': 0,
+            'target': 4000,
+            'message': ''
+        }
+        
+        if os.path.exists(SCRAPER_STATUS_FILE):
+            try:
+                with open(SCRAPER_STATUS_FILE, 'r') as f:
+                    file_status = json.load(f)
+                    status_data.update(file_status)
+            except:
+                pass
+        
+        return jsonify(status_data)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/scraper/stats', methods=['GET'])
+def scraper_stats():
+    """Get scraper statistics"""
+    try:
+        stats = {
+            'total_wallets': 0,
+            'available_wallets': 0,
+            'used_wallets': 0
+        }
+        
+        if os.path.exists(SCRAPED_WALLETS_FILE):
+            try:
+                with open(SCRAPED_WALLETS_FILE, 'r') as f:
+                    data = json.load(f)
+                    wallets = data.get('wallets', [])
+                    stats['total_wallets'] = len(wallets)
+                    stats['available_wallets'] = sum(1 for w in wallets if not w.get('used', False))
+                    stats['used_wallets'] = sum(1 for w in wallets if w.get('used', False))
+            except Exception as e:
+                return jsonify({'error': f'Error reading wallets file: {str(e)}'}), 500
+        
+        return jsonify(stats)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+# ============================================
+# WALLET MODE CONTROL
+# ============================================
+@app.route('/api/wallet-mode', methods=['GET'])
+def get_wallet_mode():
+    """Get current wallet mode"""
+    try:
+        default_mode = {'mode': 'generate'}
+        
+        if os.path.exists(WALLET_MODE_FILE):
+            try:
+                with open(WALLET_MODE_FILE, 'r') as f:
+                    mode_data = json.load(f)
+                    return jsonify(mode_data)
+            except:
+                pass
+        
+        return jsonify(default_mode)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/wallet-mode', methods=['POST'])
+def set_wallet_mode():
+    """Set wallet mode (generate or scraped)"""
+    try:
+        data = request.json
+        mode = data.get('mode', 'generate')
+        
+        if mode not in ['generate', 'scraped']:
+            return jsonify({'error': 'Invalid mode. Must be "generate" or "scraped"'}), 400
+        
+        mode_data = {'mode': mode}
+        with open(WALLET_MODE_FILE, 'w') as f:
+            json.dump(mode_data, f)
+        
+        return jsonify({
+            'success': True,
+            'message': f'Wallet mode set to: {mode}',
+            'mode': mode
+        })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

@@ -16,6 +16,12 @@
         }
         .running { background-color: #10b981; }
         .stopped { background-color: #ef4444; }
+        .dot {
+            transition: transform 0.3s ease, background-color 0.3s ease;
+        }
+        #walletModeToggle:checked ~ .block {
+            background-color: #10b981;
+        }
     </style>
 </head>
 <body class="bg-gray-900 text-gray-100">
@@ -43,6 +49,80 @@
                     <button onclick="refreshDashboard()" class="bg-blue-600 hover:bg-blue-700 px-6 py-2 rounded-lg font-semibold transition">
                         🔄 Refresh
                     </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Wallet Scraper Card -->
+        <div class="bg-gray-800 rounded-lg p-6 mb-6 shadow-lg">
+            <h2 class="text-2xl font-bold mb-4">🔍 Wallet Scraper</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <!-- Scraper Controls -->
+                <div>
+                    <div class="flex items-center justify-between mb-4">
+                        <div class="flex items-center">
+                            <span id="scraperStatusDot" class="status-dot stopped"></span>
+                            <span class="text-lg font-semibold">Status: <span id="scraperStatus">Stopped</span></span>
+                        </div>
+                        <div class="space-x-2">
+                            <button onclick="startScraper()" id="startScraperBtn" class="bg-green-600 hover:bg-green-700 px-4 py-2 rounded-lg font-semibold transition text-sm">
+                                ▶ Start Scraper
+                            </button>
+                            <button onclick="stopScraper()" id="stopScraperBtn" class="bg-red-600 hover:bg-red-700 px-4 py-2 rounded-lg font-semibold transition text-sm">
+                                ⏸ Stop Scraper
+                            </button>
+                        </div>
+                    </div>
+                    <div class="bg-gray-700 rounded p-4 space-y-2">
+                        <div class="flex justify-between">
+                            <span class="text-gray-400">Wallets Collected:</span>
+                            <span class="font-bold" id="scraperWalletsCollected">0</span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span class="text-gray-400">Target:</span>
+                            <span class="font-bold" id="scraperTarget">4000</span>
+                        </div>
+                        <div class="text-sm text-gray-400 mt-2" id="scraperMessage"></div>
+                    </div>
+                </div>
+                
+                <!-- Wallet Mode Toggle -->
+                <div>
+                    <h3 class="text-lg font-semibold mb-4">Wallet Source Mode</h3>
+                    <div class="bg-gray-700 rounded p-4">
+                        <div class="flex items-center justify-between mb-4">
+                            <span class="text-gray-300">Current Mode:</span>
+                            <span class="font-bold text-lg" id="walletModeDisplay">Generate</span>
+                        </div>
+                        <div class="flex items-center space-x-4">
+                            <label class="flex items-center cursor-pointer">
+                                <span class="mr-3 text-gray-300">Generate</span>
+                                <div class="relative">
+                                    <input type="checkbox" id="walletModeToggle" class="sr-only" onchange="toggleWalletMode()">
+                                    <div class="block bg-gray-600 w-14 h-8 rounded-full" id="walletModeTrack"></div>
+                                    <div class="dot absolute left-1 top-1 bg-white w-6 h-6 rounded-full transition transform" id="walletModeDot"></div>
+                                </div>
+                                <span class="ml-3 text-gray-300">Scraped</span>
+                            </label>
+                        </div>
+                        <div class="mt-4 bg-gray-600 rounded p-3">
+                            <div class="text-sm text-gray-300 mb-2">Scraped Wallet Statistics:</div>
+                            <div class="grid grid-cols-3 gap-2 text-xs">
+                                <div>
+                                    <div class="text-gray-400">Total</div>
+                                    <div class="font-bold" id="scrapedTotal">0</div>
+                                </div>
+                                <div>
+                                    <div class="text-gray-400">Available</div>
+                                    <div class="font-bold text-green-400" id="scrapedAvailable">0</div>
+                                </div>
+                                <div>
+                                    <div class="text-gray-400">Used</div>
+                                    <div class="font-bold text-yellow-400" id="scrapedUsed">0</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -323,12 +403,172 @@
             return div.innerHTML;
         }
 
+        // Scraper Functions
+        async function checkScraperStatus() {
+            try {
+                const response = await fetch(`${API_URL}/scraper/status`);
+                const data = await response.json();
+                
+                const statusDot = document.getElementById('scraperStatusDot');
+                const statusText = document.getElementById('scraperStatus');
+                const startBtn = document.getElementById('startScraperBtn');
+                const stopBtn = document.getElementById('stopScraperBtn');
+                
+                if (data.running) {
+                    statusDot.className = 'status-dot running';
+                    statusText.textContent = 'Running';
+                    startBtn.disabled = true;
+                    startBtn.classList.add('opacity-50', 'cursor-not-allowed');
+                    stopBtn.disabled = false;
+                    stopBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+                } else {
+                    statusDot.className = 'status-dot stopped';
+                    statusText.textContent = data.status === 'completed' ? 'Completed' : 'Stopped';
+                    startBtn.disabled = false;
+                    startBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+                    stopBtn.disabled = true;
+                    stopBtn.classList.add('opacity-50', 'cursor-not-allowed');
+                }
+                
+                document.getElementById('scraperWalletsCollected').textContent = data.wallets_collected || 0;
+                document.getElementById('scraperTarget').textContent = data.target || 4000;
+                document.getElementById('scraperMessage').textContent = data.message || '';
+            } catch (error) {
+                console.error('Error checking scraper status:', error);
+            }
+        }
+
+        async function loadScraperStats() {
+            try {
+                const response = await fetch(`${API_URL}/scraper/stats`);
+                const data = await response.json();
+                
+                document.getElementById('scrapedTotal').textContent = data.total_wallets || 0;
+                document.getElementById('scrapedAvailable').textContent = data.available_wallets || 0;
+                document.getElementById('scrapedUsed').textContent = data.used_wallets || 0;
+            } catch (error) {
+                console.error('Error loading scraper stats:', error);
+            }
+        }
+
+        async function loadWalletMode() {
+            try {
+                const response = await fetch(`${API_URL}/wallet-mode`);
+                const data = await response.json();
+                
+                const mode = data.mode || 'generate';
+                const toggle = document.getElementById('walletModeToggle');
+                const dot = document.getElementById('walletModeDot');
+                const display = document.getElementById('walletModeDisplay');
+                
+                const track = document.getElementById('walletModeTrack');
+                if (mode === 'scraped') {
+                    toggle.checked = true;
+                    dot.style.transform = 'translateX(24px)';
+                    dot.classList.add('bg-green-500');
+                    if (track) track.style.backgroundColor = '#10b981';
+                    display.textContent = 'Scraped';
+                } else {
+                    toggle.checked = false;
+                    dot.style.transform = 'translateX(0)';
+                    dot.classList.remove('bg-green-500');
+                    if (track) track.style.backgroundColor = '#4b5563';
+                    display.textContent = 'Generate';
+                }
+            } catch (error) {
+                console.error('Error loading wallet mode:', error);
+            }
+        }
+
+        async function startScraper() {
+            try {
+                const response = await fetch(`${API_URL}/scraper/start`, {
+                    method: 'POST'
+                });
+                const data = await response.json();
+                
+                if (data.success) {
+                    alert('Scraper started successfully!');
+                    checkScraperStatus();
+                } else {
+                    alert('Error: ' + (data.error || 'Unknown error'));
+                }
+            } catch (error) {
+                alert('Failed to start scraper: ' + error.message);
+            }
+        }
+
+        async function stopScraper() {
+            if (!confirm('Are you sure you want to stop the scraper?')) {
+                return;
+            }
+            
+            try {
+                const response = await fetch(`${API_URL}/scraper/stop`, {
+                    method: 'POST'
+                });
+                const data = await response.json();
+                
+                if (data.success) {
+                    alert('Scraper stopped successfully!');
+                    checkScraperStatus();
+                } else {
+                    alert('Error: ' + (data.error || 'Unknown error'));
+                }
+            } catch (error) {
+                alert('Failed to stop scraper: ' + error.message);
+            }
+        }
+
+        async function toggleWalletMode() {
+            const toggle = document.getElementById('walletModeToggle');
+            const dot = document.getElementById('walletModeDot');
+            const track = document.getElementById('walletModeTrack');
+            const mode = toggle.checked ? 'scraped' : 'generate';
+            
+            // Update UI immediately for better UX
+            if (mode === 'scraped') {
+                dot.style.transform = 'translateX(24px)';
+                dot.classList.add('bg-green-500');
+                if (track) track.style.backgroundColor = '#10b981';
+            } else {
+                dot.style.transform = 'translateX(0)';
+                dot.classList.remove('bg-green-500');
+                if (track) track.style.backgroundColor = '#4b5563';
+            }
+            
+            try {
+                const response = await fetch(`${API_URL}/wallet-mode`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ mode: mode })
+                });
+                const data = await response.json();
+                
+                if (data.success) {
+                    loadWalletMode(); // Reload to sync with server
+                    alert(`Wallet mode set to: ${mode}`);
+                } else {
+                    alert('Error: ' + (data.error || 'Unknown error'));
+                    toggle.checked = !toggle.checked;
+                    loadWalletMode(); // Revert UI
+                }
+            } catch (error) {
+                alert('Failed to set wallet mode: ' + error.message);
+                toggle.checked = !toggle.checked;
+                loadWalletMode(); // Revert UI
+            }
+        }
+
         function refreshDashboard() {
             checkBotStatus();
             loadStats();
             loadBalances();
             loadTransactions();
             loadLogs();
+            checkScraperStatus();
+            loadScraperStats();
+            loadWalletMode();
         }
 
         // Initial load

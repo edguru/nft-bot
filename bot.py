@@ -96,6 +96,10 @@ MAX_MAINNET_TXNS_PER_DAY = 7200  # Increased from 6300
 # CSV file
 CSV_FILE = 'nft_minting_records.csv'
 
+# Scraped wallets configuration
+SCRAPED_WALLETS_FILE = 'scraped_wallets.json'
+WALLET_MODE_FILE = 'wallet_mode.json'
+
 # Contract ABI
 CONTRACT_ABI = [
     {
@@ -307,7 +311,84 @@ def setup_web3(owner_private_key):
 # ============================================
 # WALLET MANAGEMENT
 # ============================================
+def get_wallet_mode():
+    """Get current wallet mode from file"""
+    try:
+        if os.path.exists(WALLET_MODE_FILE):
+            with open(WALLET_MODE_FILE, 'r') as f:
+                mode_data = json.load(f)
+                return mode_data.get('mode', 'generate')
+    except Exception as e:
+        logger.warning("Error reading wallet mode: %s", e)
+    return 'generate'  # Default to generate
+
+def get_next_scraped_wallet():
+    """Get next available scraped wallet"""
+    try:
+        if not os.path.exists(SCRAPED_WALLETS_FILE):
+            return None
+        
+        with open(SCRAPED_WALLETS_FILE, 'r') as f:
+            data = json.load(f)
+        
+        wallets = data.get('wallets', [])
+        
+        # Find first unused wallet
+        for wallet in wallets:
+            if not wallet.get('used', False):
+                return wallet
+        
+        return None  # No available scraped wallets
+    except Exception as e:
+        logger.error("Error reading scraped wallets: %s", e)
+        return None
+
+def mark_scraped_wallet_used(address):
+    """Mark a scraped wallet as used"""
+    try:
+        if not os.path.exists(SCRAPED_WALLETS_FILE):
+            return
+        
+        with open(SCRAPED_WALLETS_FILE, 'r') as f:
+            data = json.load(f)
+        
+        wallets = data.get('wallets', [])
+        
+        # Find and mark wallet as used
+        for wallet in wallets:
+            if wallet.get('address', '').lower() == address.lower():
+                wallet['used'] = True
+                wallet['used_date'] = datetime.now().isoformat()
+                break
+        
+        # Save back to file
+        data['wallets'] = wallets
+        with open(SCRAPED_WALLETS_FILE, 'w') as f:
+            json.dump(data, f, indent=2)
+        
+        logger.info("✅ Marked scraped wallet as used: %s", address)
+    except Exception as e:
+        logger.error("Error marking wallet as used: %s", e)
+
+def is_wallet_already_minted(address):
+    """Check if wallet was already minted (duplicate check)"""
+    try:
+        if not os.path.exists(CSV_FILE):
+            return False
+        
+        with csv_lock:
+            with open(CSV_FILE, 'r') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    if row.get('Recipient_Address', '').lower() == address.lower():
+                        return True
+        return False
+    except Exception as e:
+        logger.error("Error checking duplicate wallet: %s", e)
+        return False
+
 def generate_new_wallet():
+    """Generate a new wallet using Account.create()"""
     logger.info("Generating new recipient wallet...")
     account = Account.create()
     wallet = {
@@ -315,6 +396,29 @@ def generate_new_wallet():
         'private_key': account.key.hex()
     }
     logger.info("✅ New wallet generated: %s", wallet['address'])
+    return wallet
+
+def get_wallet_for_minting():
+    """Get wallet for minting - tries scraped first, then generates"""
+    mode = get_wallet_mode()
+    
+    # Try scraped wallet first if mode is scraped or if we want to prioritize scraped
+    if mode == 'scraped' or True:  # Always try scraped first per requirements
+        scraped_wallet = get_next_scraped_wallet()
+        if scraped_wallet:
+            # Convert scraped wallet format to bot format
+            wallet = {
+                'address': scraped_wallet['address'],
+                'private_key': None,  # Scraped wallets don't have private keys
+                'source': 'scraped',
+                'usd_value': scraped_wallet.get('usd_value', 0)
+            }
+            logger.info("✅ Using scraped wallet: %s (USD: $%.2f)", wallet['address'], wallet['usd_value'])
+            return wallet
+    
+    # Fall back to generated wallet
+    wallet = generate_new_wallet()
+    wallet['source'] = 'generated'
     return wallet
 
 def check_gas_balance(w3, address):
@@ -451,6 +555,12 @@ def worker_thread(worker_id, task_queue, stats_dict, owner_private_key, w3_testn
             
             network, wallet = task
             
+            # Check for duplicate mint (prevent minting to same wallet twice)
+            if is_wallet_already_minted(wallet['address']):
+                logger.warning("⚠️ Wallet %s already minted, skipping duplicate", wallet['address'])
+                task_queue.task_done()
+                continue
+            
             # Execute mint
             tx_hash, status, gas_used = mint_nft(
                 network, wallet['address'], owner_account, owner_address,
@@ -459,11 +569,17 @@ def worker_thread(worker_id, task_queue, stats_dict, owner_private_key, w3_testn
             )
             
             # Save to CSV (thread-safe)
-            save_to_csv(network, wallet['address'], wallet['private_key'], 
+            save_to_csv(network, wallet['address'], wallet.get('private_key'), 
                        tx_hash, status, gas_used, owner_address)
             
             # Update stats (thread-safe with lock)
             if status == 'SUCCESS':
+                # Mark scraped wallet as used if it was a scraped wallet
+                if wallet.get('source') == 'scraped':
+                    mark_scraped_wallet_used(wallet['address'])
+                    with stats_dict['lock']:
+                        stats_dict['scraped_wallets_used'] = stats_dict.get('scraped_wallets_used', 0) + 1
+                
                 with stats_dict['lock']:
                     stats_dict['total_minted'] += 1
                     if network == 'mainnet':
@@ -533,6 +649,9 @@ Start Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         'total_minted': 0,
         'mainnet_today': 0,
         'target': true_random_int(MIN_MAINNET_TXNS_PER_DAY, MAX_MAINNET_TXNS_PER_DAY),
+        'scraped_wallets_used': 0,
+        'using_scraped': True,  # Track if we're currently using scraped wallets
+        'switched_to_generated': False,  # Track if we've sent the switch email
         'lock': threading.Lock()
     }
     
@@ -590,8 +709,55 @@ Start Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                     time.sleep(3600)
                     continue
             
-            # Generate new recipient wallet
-            wallet = generate_new_wallet()
+            # Get wallet for minting (scraped first, then generated)
+            wallet = get_wallet_for_minting()
+            
+            # Check if we switched from scraped to generated
+            with stats_dict['lock']:
+                was_using_scraped = stats_dict['using_scraped']
+                is_scraped = wallet.get('source') == 'scraped'
+                stats_dict['using_scraped'] = is_scraped
+                
+                # Send email alert when switching from scraped to generated
+                if was_using_scraped and not is_scraped and not stats_dict['switched_to_generated']:
+                    scraped_count = stats_dict.get('scraped_wallets_used', 0)
+                    logger.info("🔄 Switching from scraped wallets to generated wallets")
+                    logger.info("📧 Sending email alert about wallet source switch")
+                    
+                    # Send email alert
+                    try:
+                        from email.mime.multipart import MIMEMultipart
+                        from email.mime.text import MIMEText
+                        
+                        msg = MIMEMultipart()
+                        msg['Subject'] = '🔄 Wallet Source Switch - Scraped Wallets Exhausted'
+                        msg['From'] = EMAIL_RECIPIENT
+                        msg['To'] = EMAIL_RECIPIENT
+                        
+                        body = MIMEText(f"""
+Wallet Source Switch Alert
+
+Date: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+
+✅ Successfully minted on {scraped_count} scraped wallets.
+
+All available scraped wallets have been used. The bot is now switching to wallet generation mode.
+
+The bot will continue minting using newly generated wallets.
+
+This is an automated email from your NFT Minting Bot.
+                        """)
+                        msg.attach(body)
+                        
+                        ses_client.send_raw_email(
+                            Source=EMAIL_RECIPIENT,
+                            Destinations=[EMAIL_RECIPIENT],
+                            RawMessage={'Data': msg.as_string()}
+                        )
+                        logger.info("✅ Switch email sent successfully")
+                        stats_dict['switched_to_generated'] = True
+                    except Exception as e:
+                        logger.error("❌ Failed to send switch email: %s", e)
             
             # Determine network
             testnet_counter += 1
