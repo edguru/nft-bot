@@ -103,7 +103,7 @@ SCRAPED_WALLET_INDEX_FILE = 'scraped_wallet_index.json'
 
 # Wallet selection ratio (probability of using scraped wallet when available)
 # 0.5 = 50% scraped, 50% generated
-SCRAPED_WALLET_PROBABILITY = 0.5  # 50% chance to use scraped wallet
+SCRAPED_WALLET_PROBABILITY = 0.3  # 50% chance to use scraped wallet
 
 # Thread-safe lock for scraped wallet index
 scraped_wallet_lock = threading.Lock()
