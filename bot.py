@@ -127,12 +127,12 @@ CONTRACT_ABI = [
 # OPTIMIZED: Sleep patterns reduced to 1-5 seconds (from 3-15)
 # This allows ~720-3600 tx/hour instead of 240-1200 tx/hour
 SLEEP_PATTERNS = [
-    11, 8, 4, 6, 2, 3, 5, 3, 4, 7, 15
+    11, 8, 4, 6, 12, 6, 5, 6, 4, 7, 15
 ]
 
 # OPTIMIZED: Testnet/Mainnet ratio changed to 3-7 testnet per 1 mainnet
 # This focuses more mints on mainnet (target network)
-CYCLE_OPTIONS = [1, 1]
+CYCLE_OPTIONS = [2, 1]
 
 # OPTIMIZED: Parallel processing - number of concurrent workers
 # Each worker can process transactions simultaneously
