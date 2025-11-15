@@ -99,10 +99,14 @@ CSV_FILE = 'nft_minting_records.csv'
 # Scraped wallets configuration
 SCRAPED_WALLETS_FILE = 'scraped_wallets.json'
 WALLET_MODE_FILE = 'wallet_mode.json'
+SCRAPED_WALLET_INDEX_FILE = 'scraped_wallet_index.json'
 
 # Wallet selection ratio (probability of using scraped wallet when available)
 # 0.5 = 50% scraped, 50% generated
 SCRAPED_WALLET_PROBABILITY = 0.5  # 50% chance to use scraped wallet
+
+# Thread-safe lock for scraped wallet index
+scraped_wallet_lock = threading.Lock()
 
 # Contract ABI
 CONTRACT_ABI = [
@@ -326,39 +330,107 @@ def get_wallet_mode():
         logger.warning("Error reading wallet mode: %s", e)
     return 'generate'  # Default to generate
 
-def get_next_scraped_wallet():
-    """Get next available scraped wallet"""
+def get_scraped_wallet_index():
+    """Get current index in scraped wallets list (thread-safe)
+    
+    Note: Do not call this while holding scraped_wallet_lock to avoid deadlock.
+    """
+    try:
+        if os.path.exists(SCRAPED_WALLET_INDEX_FILE):
+            with open(SCRAPED_WALLET_INDEX_FILE, 'r') as f:
+                index_data = json.load(f)
+                return index_data.get('current_index', 0)
+        return 0
+    except Exception as e:
+        logger.warning("Error reading scraped wallet index: %s", e)
+        return 0
+
+def save_scraped_wallet_index(index):
+    """Save current index in scraped wallets list (thread-safe)"""
+    with scraped_wallet_lock:
+        try:
+            index_data = {'current_index': index, 'last_updated': datetime.now().isoformat()}
+            with open(SCRAPED_WALLET_INDEX_FILE, 'w') as f:
+                json.dump(index_data, f, indent=2)
+        except Exception as e:
+            logger.warning("Error saving scraped wallet index: %s", e)
+
+def get_next_scraped_wallet(advance_index=True):
+    """Get next available scraped wallet starting from current index
+    
+    Args:
+        advance_index: If True, advance index after getting wallet (for skipping)
+    
+    Returns:
+        tuple: (wallet_dict, wallet_index) or (None, None) if no wallet found
+    """
     try:
         if not os.path.exists(SCRAPED_WALLETS_FILE):
             logger.debug("No scraped wallets file found at %s", SCRAPED_WALLETS_FILE)
-            return None
+            return None, None
         
-        with open(SCRAPED_WALLETS_FILE, 'r') as f:
-            data = json.load(f)
-        
-        wallets = data.get('wallets', [])
-        
-        if len(wallets) == 0:
-            logger.debug("Scraped wallets file exists but contains no wallets")
-            return None
-        
-        # Find first unused wallet
-        available_count = 0
-        for wallet in wallets:
-            if not wallet.get('used', False):
-                available_count += 1
-                logger.debug("Found available scraped wallet: %s (USD: $%.2f)", 
-                           wallet.get('address'), wallet.get('usd_value', 0))
-                return wallet
-        
-        logger.info("All %d scraped wallets have been used", len(wallets))
-        return None  # No available scraped wallets
+        with scraped_wallet_lock:
+            with open(SCRAPED_WALLETS_FILE, 'r') as f:
+                data = json.load(f)
+            
+            wallets = data.get('wallets', [])
+            
+            if len(wallets) == 0:
+                logger.debug("Scraped wallets file exists but contains no wallets")
+                return None, None
+            
+            # Get current index (need to read it inside the lock)
+            if os.path.exists(SCRAPED_WALLET_INDEX_FILE):
+                try:
+                    with open(SCRAPED_WALLET_INDEX_FILE, 'r') as f:
+                        index_data = json.load(f)
+                        current_index = index_data.get('current_index', 0)
+                except:
+                    current_index = 0
+            else:
+                current_index = 0
+            
+            # Start searching from current index
+            checked_count = 0
+            for i in range(current_index, len(wallets)):
+                wallet = wallets[i]
+                if not wallet.get('used', False):
+                    # Found unused wallet
+                    logger.debug("Found available scraped wallet at index %d: %s (USD: $%.2f)", 
+                               i, wallet.get('address'), wallet.get('usd_value', 0))
+                    
+                    # Advance index if requested (for skipping)
+                    if advance_index:
+                        index_data = {'current_index': i + 1, 'last_updated': datetime.now().isoformat()}
+                        with open(SCRAPED_WALLET_INDEX_FILE, 'w') as f:
+                            json.dump(index_data, f, indent=2)
+                    
+                    return wallet, i
+                checked_count += 1
+            
+            # If we reached the end, wrap around and check from beginning
+            if current_index > 0:
+                for i in range(0, current_index):
+                    wallet = wallets[i]
+                    if not wallet.get('used', False):
+                        logger.debug("Found available scraped wallet at index %d (wrapped): %s (USD: $%.2f)", 
+                                   i, wallet.get('address'), wallet.get('usd_value', 0))
+                        if advance_index:
+                            index_data = {'current_index': i + 1, 'last_updated': datetime.now().isoformat()}
+                            with open(SCRAPED_WALLET_INDEX_FILE, 'w') as f:
+                                json.dump(index_data, f, indent=2)
+                        return wallet, i
+                    checked_count += 1
+            
+            logger.info("All %d scraped wallets have been used (checked %d from index %d)", 
+                        len(wallets), checked_count, current_index)
+            return None, None  # No available scraped wallets
     except json.JSONDecodeError as e:
         logger.error("❌ JSON decode error reading scraped wallets: %s", e, exc_info=True)
-        return None
+        return None, None
     except Exception as e:
         logger.error("❌ Error reading scraped wallets: %s", e, exc_info=True)
-        return None
+        return None, None
 
 def mark_scraped_wallet_used(address):
     """Mark a scraped wallet as used"""
@@ -416,12 +488,16 @@ def generate_new_wallet():
     return wallet
 
 def get_wallet_for_minting():
-    """Get wallet for minting - randomly disperses between scraped and generated wallets"""
+    """Get wallet for minting - randomly disperses between scraped and generated wallets
+    
+    When a scraped wallet is skipped, the index advances so the next call gets the next wallet.
+    This ensures each scraped wallet is only offered once.
+    """
     mode = get_wallet_mode()
     logger.debug("Wallet mode: %s", mode)
     
-    # Check if scraped wallets are available
-    scraped_wallet = get_next_scraped_wallet()
+    # Check if scraped wallets are available (don't advance index yet)
+    scraped_wallet, wallet_index = get_next_scraped_wallet(advance_index=False)
     scraped_available = scraped_wallet is not None
     
     # Randomly decide whether to use scraped or generated wallet
@@ -436,6 +512,9 @@ def get_wallet_for_minting():
     
     # Use scraped wallet if randomly selected and available
     if use_scraped and scraped_wallet:
+        # Advance index since we're using this wallet
+        save_scraped_wallet_index(wallet_index + 1)
+        
         # Convert scraped wallet format to bot format
         wallet = {
             'address': scraped_wallet['address'],
@@ -448,7 +527,9 @@ def get_wallet_for_minting():
     
     # Use generated wallet (either randomly selected or fallback if no scraped available)
     if scraped_available:
-        logger.debug("Randomly selected generated wallet (scraped available but not chosen)")
+        # Advance index since we're skipping this scraped wallet
+        save_scraped_wallet_index(wallet_index + 1)
+        logger.debug("Randomly selected generated wallet (scraped wallet at index %d skipped, index advanced)", wallet_index)
     else:
         logger.debug("No scraped wallets available, generating new wallet...")
     
@@ -756,7 +837,7 @@ Start Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                 if stats_dict['total_minted'] % 100 == 0:
                     # Quick check if any scraped wallets remain available
                     try:
-                        scraped_wallet_check = get_next_scraped_wallet()
+                        scraped_wallet_check, _ = get_next_scraped_wallet(advance_index=False)
                         if scraped_wallet_check is None and stats_dict.get('scraped_wallets_used', 0) > 0 and not stats_dict.get('switched_to_generated', False):
                             scraped_count = stats_dict.get('scraped_wallets_used', 0)
                             logger.info("🔄 All scraped wallets have been used")
