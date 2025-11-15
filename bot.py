@@ -102,7 +102,7 @@ WALLET_MODE_FILE = 'wallet_mode.json'
 
 # Wallet selection ratio (probability of using scraped wallet when available)
 # 0.5 = 50% scraped, 50% generated
-SCRAPED_WALLET_PROBABILITY = 0.5  # 50% chance to use scraped wallet
+SCRAPED_WALLET_PROBABILITY = 0.3  # 50% chance to use scraped wallet
 
 # Contract ABI
 CONTRACT_ABI = [
