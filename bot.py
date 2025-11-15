@@ -100,6 +100,10 @@ CSV_FILE = 'nft_minting_records.csv'
 SCRAPED_WALLETS_FILE = 'scraped_wallets.json'
 WALLET_MODE_FILE = 'wallet_mode.json'
 
+# Wallet selection ratio (probability of using scraped wallet when available)
+# 0.5 = 50% scraped, 50% generated
+SCRAPED_WALLET_PROBABILITY = 0.5  # 50% chance to use scraped wallet
+
 # Contract ABI
 CONTRACT_ABI = [
     {
@@ -412,13 +416,26 @@ def generate_new_wallet():
     return wallet
 
 def get_wallet_for_minting():
-    """Get wallet for minting - tries scraped first, then generates"""
+    """Get wallet for minting - randomly disperses between scraped and generated wallets"""
     mode = get_wallet_mode()
     logger.debug("Wallet mode: %s", mode)
     
-    # Always try scraped wallet first per requirements
+    # Check if scraped wallets are available
     scraped_wallet = get_next_scraped_wallet()
-    if scraped_wallet:
+    scraped_available = scraped_wallet is not None
+    
+    # Randomly decide whether to use scraped or generated wallet
+    # This disperses scraped wallets randomly instead of using them all at once
+    use_scraped = False
+    if scraped_available:
+        # Use random probability to decide
+        random_value = secrets.randbelow(100) / 100.0  # 0.0 to 0.99
+        use_scraped = random_value < SCRAPED_WALLET_PROBABILITY
+        logger.debug("Random selection: %.2f < %.2f = %s (scraped available: %s)", 
+                    random_value, SCRAPED_WALLET_PROBABILITY, use_scraped, scraped_available)
+    
+    # Use scraped wallet if randomly selected and available
+    if use_scraped and scraped_wallet:
         # Convert scraped wallet format to bot format
         wallet = {
             'address': scraped_wallet['address'],
@@ -429,8 +446,12 @@ def get_wallet_for_minting():
         logger.info("✅ Using scraped wallet: %s (USD: $%.2f)", wallet['address'], wallet['usd_value'])
         return wallet
     
-    # Fall back to generated wallet
-    logger.info("No scraped wallets available, generating new wallet...")
+    # Use generated wallet (either randomly selected or fallback if no scraped available)
+    if scraped_available:
+        logger.debug("Randomly selected generated wallet (scraped available but not chosen)")
+    else:
+        logger.debug("No scraped wallets available, generating new wallet...")
+    
     wallet = generate_new_wallet()
     wallet['source'] = 'generated'
     logger.info("✅ Generated new wallet: %s", wallet['address'])
@@ -724,55 +745,60 @@ Start Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                     time.sleep(3600)
                     continue
             
-            # Get wallet for minting (scraped first, then generated)
+            # Get wallet for minting (randomly dispersed between scraped and generated)
             wallet = get_wallet_for_minting()
             
-            # Check if we switched from scraped to generated
+            # Track wallet source usage (for statistics)
             with stats_dict['lock']:
-                was_using_scraped = stats_dict['using_scraped']
                 is_scraped = wallet.get('source') == 'scraped'
-                stats_dict['using_scraped'] = is_scraped
                 
-                # Send email alert when switching from scraped to generated
-                if was_using_scraped and not is_scraped and not stats_dict['switched_to_generated']:
-                    scraped_count = stats_dict.get('scraped_wallets_used', 0)
-                    logger.info("🔄 Switching from scraped wallets to generated wallets")
-                    logger.info("📧 Sending email alert about wallet source switch")
-                    
-                    # Send email alert
+                # Periodically check if scraped wallets are exhausted (every 100 mints to avoid overhead)
+                if stats_dict['total_minted'] % 100 == 0:
+                    # Quick check if any scraped wallets remain available
                     try:
-                        from email.mime.multipart import MIMEMultipart
-                        from email.mime.text import MIMEText
-                        
-                        msg = MIMEMultipart()
-                        msg['Subject'] = '🔄 Wallet Source Switch - Scraped Wallets Exhausted'
-                        msg['From'] = EMAIL_RECIPIENT
-                        msg['To'] = EMAIL_RECIPIENT
-                        
-                        body = MIMEText(f"""
+                        scraped_wallet_check = get_next_scraped_wallet()
+                        if scraped_wallet_check is None and stats_dict.get('scraped_wallets_used', 0) > 0 and not stats_dict.get('switched_to_generated', False):
+                            scraped_count = stats_dict.get('scraped_wallets_used', 0)
+                            logger.info("🔄 All scraped wallets have been used")
+                            logger.info("📧 Sending email alert about scraped wallets exhaustion")
+                            
+                            # Send email alert
+                            try:
+                                from email.mime.multipart import MIMEMultipart
+                                from email.mime.text import MIMEText
+                                
+                                msg = MIMEMultipart()
+                                msg['Subject'] = '🔄 Wallet Source Switch - Scraped Wallets Exhausted'
+                                msg['From'] = EMAIL_RECIPIENT
+                                msg['To'] = EMAIL_RECIPIENT
+                                
+                                body = MIMEText(f"""
 Wallet Source Switch Alert
 
 Date: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 
-✅ Successfully minted on {scraped_count} scraped wallets.
+✅ Successfully minted on {scraped_count} scraped wallets (randomly dispersed with generated wallets).
 
-All available scraped wallets have been used. The bot is now switching to wallet generation mode.
+All available scraped wallets have been used. The bot is now switching to wallet generation mode only.
 
 The bot will continue minting using newly generated wallets.
 
 This is an automated email from your NFT Minting Bot.
-                        """)
-                        msg.attach(body)
-                        
-                        ses_client.send_raw_email(
-                            Source=EMAIL_RECIPIENT,
-                            Destinations=[EMAIL_RECIPIENT],
-                            RawMessage={'Data': msg.as_string()}
-                        )
-                        logger.info("✅ Switch email sent successfully")
-                        stats_dict['switched_to_generated'] = True
+                                """)
+                                msg.attach(body)
+                                
+                                ses_client.send_raw_email(
+                                    Source=EMAIL_RECIPIENT,
+                                    Destinations=[EMAIL_RECIPIENT],
+                                    RawMessage={'Data': msg.as_string()}
+                                )
+                                logger.info("✅ Switch email sent successfully")
+                                stats_dict['switched_to_generated'] = True
+                                stats_dict['using_scraped'] = False
+                            except Exception as e:
+                                logger.error("❌ Failed to send switch email: %s", e)
                     except Exception as e:
-                        logger.error("❌ Failed to send switch email: %s", e)
+                        logger.debug("Error checking scraped wallet availability: %s", e)
             
             # Determine network
             testnet_counter += 1
